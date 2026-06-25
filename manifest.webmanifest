@@ -1,0 +1,17 @@
+{
+  "name": "GabOS",
+  "short_name": "GabOS",
+  "description": "Mon organiseur personnel : tâches, humeur, focus, objectifs",
+  "lang": "fr",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#13111a",
+  "theme_color": "#13111a",
+  "icons": [
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

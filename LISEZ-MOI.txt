@@ -1,0 +1,45 @@
+═══════════════════════════════════════════════════
+  GabOS — Installer l'app sur iPhone (et Android)
+═══════════════════════════════════════════════════
+
+Le dossier "GabOS" contient une vraie petite application web.
+Une fois hébergée en ligne, elle s'installe sur l'écran d'accueil
+de l'iPhone comme une vraie app, et GARDE les données (contrairement
+à Claude.ai qui efface tout).
+
+───────────────────────────────────────────────────
+ÉTAPE 1 — Mettre l'app en ligne (gratuit, 2 minutes)
+───────────────────────────────────────────────────
+
+Option A — Netlify Drop (le plus simple, aucun compte requis) :
+  1. Aller sur  https://app.netlify.com/drop
+  2. Glisser-déposer le DOSSIER "GabOS" entier sur la page
+  3. Netlify donne un lien du type  https://xxxxx.netlify.app
+  → C'est ce lien qu'on ouvre sur l'iPhone.
+
+Option B — GitHub Pages :
+  1. Créer un dépôt, y mettre le contenu du dossier GabOS
+  2. Settings > Pages > activer sur la branche main
+  3. Utiliser le lien fourni
+
+───────────────────────────────────────────────────
+ÉTAPE 2 — Installer sur iPhone
+───────────────────────────────────────────────────
+  1. Ouvrir le lien dans SAFARI (important : pas Chrome)
+  2. Toucher le bouton Partager (carré avec flèche vers le haut)
+  3. "Sur l'écran d'accueil"
+  4. Confirmer → l'icône GabOS apparaît sur l'écran d'accueil
+  5. L'ouvrir depuis cette icône : plein écran + données gardées
+
+  Sur Android : ouvrir dans Chrome > menu (⋮) > "Installer l'application"
+
+───────────────────────────────────────────────────
+IMPORTANT — Sauvegarde
+───────────────────────────────────────────────────
+Les données sont stockées DANS le téléphone. iOS peut parfois
+les effacer si l'app n'est pas ouverte pendant plusieurs jours.
+→ Onglet "Plus" > "Sauvegarde" : exporter un fichier de temps en
+  temps (à s'envoyer par mail ou garder dans iCloud/Fichiers).
+  On peut tout réimporter en un clic depuis le même écran.
+
+═══════════════════════════════════════════════════

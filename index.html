@@ -1,0 +1,1190 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>GabOS</title>
+
+  <!-- ─── Réglages iOS / PWA ─────────────────────────────── -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="GabOS" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#13111a" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icon-180.png" />
+  <link rel="icon" href="icon-180.png" />
+
+  <!-- ─── React + Babel (transforme le JSX dans le navigateur) ─ -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+
+  <style>
+    html, body { margin: 0; padding: 0; background: #13111a; }
+    /* Marges de sécurité pour l'encoche / barre du bas iPhone */
+    #root {
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+// ─── PALETTE & TOKENS ────────────────────────────────────────────
+const C = {
+  bg: "#13111a",
+  surface: "#1e1b2e",
+  card: "#252235",
+  cardHover: "#2d2945",
+  border: "#332f4a",
+  mauve: "#c9b8e8",
+  mauveLight: "#e2d8f5",
+  mauvedim: "#9b87cc",
+  teal: "#a8d8cc",
+  tealDim: "#7ab8ac",
+  rose: "#e8c4d8",
+  roseDim: "#c49ab8",
+  beige: "#f2e8d9",
+  gold: "#d4b896",
+  red: "#e88a8a",
+  green: "#8adbc8",
+  text: "#ede8f5",
+  textDim: "#9490a8",
+  textFaint: "#5c5870",
+};
+
+const MOODS = ["😔", "😕", "😐", "🙂", "😊", "😄", "🌟"];
+const MOOD_LABELS = ["Très bas", "Bas", "Neutre", "Bien", "Super", "Excellent", "Rayonnante"];
+
+// ─── STORAGE ─────────────────────────────────────────────────────
+function useStorage(key, init) {
+  const [val, setVal] = useState(() => {
+    try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : init; }
+    catch { return init; }
+  });
+  useEffect(() => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }, [key, val]);
+  return [val, setVal];
+}
+
+// Toutes les clés de données — utilisé pour la sauvegarde
+const STORAGE_KEYS = [
+  "life_tasks", "life_journal", "life_health", "life_projects",
+  "life_notes", "life_courses", "life_dossiers", "life_budget", "life_vision",
+];
+
+// ─── HELPERS ─────────────────────────────────────────────────────
+const uid = () => Math.random().toString(36).slice(2, 9);
+const today = () => new Date().toISOString().slice(0, 10);
+const fmt = (d) => new Date(d).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+const isOverdue = (d) => d && d < today();
+
+// ─── GLOBAL STYLES ───────────────────────────────────────────────
+const GS = `
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,600;1,400&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:${C.bg};color:${C.text};font-family:'Inter',sans-serif;min-height:100vh}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:${C.border};border-radius:4px}
+input,textarea,select{background:${C.surface};color:${C.text};border:1px solid ${C.border};border-radius:10px;padding:8px 12px;font-family:inherit;font-size:16px;outline:none;transition:.2s}
+input:focus,textarea:focus,select:focus{border-color:${C.mauve};box-shadow:0 0 0 3px ${C.mauve}22}
+input::placeholder,textarea::placeholder{color:${C.textFaint}}
+button{cursor:pointer;font-family:inherit;transition:.15s}
+@keyframes slideIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pop{0%{transform:scale(1)}50%{transform:scale(1.15)}100%{transform:scale(1)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.slide-in{animation:slideIn .25s ease}
+.pop{animation:pop .2s ease}
+`;
+
+// ─── COMPONENTS ──────────────────────────────────────────────────
+function Card({ children, style, className = "", onClick }) {
+  return (
+    <div className={`slide-in ${className}`} onClick={onClick} style={{
+      background: C.card, borderRadius: 16, border: `1px solid ${C.border}`,
+      padding: 20, ...style
+    }}>{children}</div>
+  );
+}
+
+function Badge({ color = C.mauve, children, small }) {
+  return (
+    <span style={{
+      background: color + "22", color, borderRadius: 99, padding: small ? "2px 8px" : "4px 10px",
+      fontSize: small ? 11 : 12, fontWeight: 600, whiteSpace: "nowrap"
+    }}>{children}</span>
+  );
+}
+
+function Btn({ children, onClick, color = C.mauve, outline, small, style, disabled }) {
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      background: outline ? "transparent" : color + "22",
+      color: outline ? C.textDim : color,
+      border: `1px solid ${outline ? C.border : color + "44"}`,
+      borderRadius: 10, padding: small ? "5px 12px" : "8px 18px",
+      fontSize: small ? 12 : 13, fontWeight: 600,
+      opacity: disabled ? .4 : 1,
+      ...style
+    }}>{children}</button>
+  );
+}
+
+function Progress({ value, color = C.mauve, height = 6, style }) {
+  return (
+    <div style={{ background: C.border, borderRadius: 99, height, overflow: "hidden", ...style }}>
+      <div style={{
+        width: `${Math.min(100, Math.max(0, value))}%`, height: "100%",
+        background: `linear-gradient(90deg, ${color}aa, ${color})`,
+        borderRadius: 99, transition: "width .5s ease"
+      }} />
+    </div>
+  );
+}
+
+function Checkbox({ checked, onChange, color = C.teal }) {
+  return (
+    <div onClick={onChange} style={{
+      width: 22, height: 22, borderRadius: 6, border: `2px solid ${checked ? color : C.border}`,
+      background: checked ? color + "33" : "transparent", cursor: "pointer",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      transition: ".15s", flexShrink: 0
+    }}>
+      {checked && <span style={{ color, fontSize: 13 }}>✓</span>}
+    </div>
+  );
+}
+
+function SectionTitle({ children, color = C.mauve, action }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+      <h3 style={{ fontSize: 13, fontWeight: 700, color, textTransform: "uppercase", letterSpacing: 1 }}>{children}</h3>
+      {action}
+    </div>
+  );
+}
+
+// ─── TAB: AUJOURD'HUI ────────────────────────────────────────────
+function TodayTab({ tasks, setTasks, journal, setJournal, health, setHealth }) {
+  const d = today();
+  const todayJ = journal[d] || { mood: 3, note: "", proud: "", water: 0 };
+
+  const updateJ = (k, v) => setJournal(j => ({ ...j, [d]: { ...todayJ, [k]: v } }));
+
+  const priorities = tasks.filter(t => t.today && !t.done).slice(0, 3);
+  const allActive = tasks.filter(t => !t.done && !t.today);
+
+  const toggleToday = (id) => setTasks(ts => ts.map(t => t.id === id ? { ...t, today: !t.today } : t));
+  const toggleDone = (id) => setTasks(ts => ts.map(t => t.id === id ? { ...t, done: !t.done, doneAt: today() } : t));
+
+  const waterGoal = 8;
+  const todayHealth = health[d] || { water: 0, sleep: "", matin: [], soir: [] };
+  const upH = (k, v) => setHealth(h => ({ ...h, [d]: { ...todayHealth, [k]: v } }));
+
+  const MATIN_ITEMS = ["Médoc matin", "Petit déj", "Soin visage", "5 min lecture"];
+  const SOIR_ITEMS = ["Médoc soir", "Eau x8", "Soin soir", "Journal"];
+
+  const greet = () => {
+    const h = new Date().getHours();
+    if (h < 12) return "Bonjour ☀️";
+    if (h < 18) return "Bonne après-midi 🌤️";
+    return "Bonsoir 🌙";
+  };
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
+      {/* Salutation */}
+      <div style={{ gridColumn: "1/-1" }}>
+        <Card style={{ background: `linear-gradient(135deg, ${C.mauve}18, ${C.teal}18)`, borderColor: C.mauve + "44" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div>
+              <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "Playfair Display" }}>{greet()} Gab 🌸</div>
+              <div style={{ color: C.textDim, fontSize: 13, marginTop: 4 }}>
+                {new Date().toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })}
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 32 }}>{MOODS[todayJ.mood]}</div>
+              <div style={{ fontSize: 11, color: C.textDim }}>{MOOD_LABELS[todayJ.mood]}</div>
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      {/* Priorités du jour */}
+      <Card>
+        <SectionTitle color={C.gold} action={
+          <Badge color={C.gold} small>{priorities.length}/3</Badge>
+        }>⭐ Mes 3 Priorités</SectionTitle>
+        {priorities.length === 0 && (
+          <div style={{ color: C.textFaint, fontSize: 13, textAlign: "center", padding: "20px 0" }}>
+            Choisis tes priorités dans l'onglet Tâches ✨
+          </div>
+        )}
+        {priorities.map(t => (
+          <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+            <Checkbox checked={t.done} onChange={() => toggleDone(t.id)} color={C.gold} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, color: t.done ? C.textFaint : C.text, textDecoration: t.done ? "line-through" : "none" }}>{t.title}</div>
+              {t.due && <div style={{ fontSize: 11, color: isOverdue(t.due) ? C.red : C.textFaint }}>{fmt(t.due)}</div>}
+            </div>
+          </div>
+        ))}
+        {allActive.length > 0 && (
+          <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
+            <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8 }}>Ajouter une priorité :</div>
+            {allActive.slice(0, 5).map(t => (
+              <div key={t.id} onClick={() => toggleToday(t.id)} style={{
+                cursor: "pointer", padding: "5px 8px", borderRadius: 8,
+                fontSize: 13, color: C.textDim, display: "flex", alignItems: "center", gap: 6
+              }}>
+                <span style={{ color: C.mauve }}>+</span> {t.title}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Humeur */}
+      <Card>
+        <SectionTitle color={C.rose}>💗 Mon humeur</SectionTitle>
+        <div style={{ fontSize: 40, textAlign: "center", marginBottom: 12 }}>{MOODS[todayJ.mood]}</div>
+        <input type="range" min={0} max={6} value={todayJ.mood}
+          onChange={e => updateJ("mood", +e.target.value)}
+          style={{ width: "100%", accentColor: C.mauve, background: "transparent", marginBottom: 8 }} />
+        <div style={{ textAlign: "center", color: C.mauve, fontSize: 12, fontWeight: 600, marginBottom: 12 }}>
+          {MOOD_LABELS[todayJ.mood]}
+        </div>
+        <textarea placeholder="Comment tu te sens aujourd'hui ?" value={todayJ.note}
+          onChange={e => updateJ("note", e.target.value)}
+          style={{ width: "100%", height: 60, resize: "none", fontSize: 13 }} />
+        <textarea placeholder="🌟 Ce qui m'a rendue fière..." value={todayJ.proud}
+          onChange={e => updateJ("proud", e.target.value)}
+          style={{ width: "100%", height: 50, resize: "none", fontSize: 13, marginTop: 8 }} />
+      </Card>
+
+      {/* Santé - Eau */}
+      <Card>
+        <SectionTitle color={C.teal}>💧 Hydratation</SectionTitle>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginBottom: 12 }}>
+          {Array.from({ length: waterGoal }).map((_, i) => (
+            <div key={i} onClick={() => upH("water", i < todayHealth.water ? i : i + 1)}
+              style={{
+                width: 36, height: 36, borderRadius: 8, cursor: "pointer",
+                background: i < todayHealth.water ? C.teal + "44" : C.border,
+                border: `2px solid ${i < todayHealth.water ? C.teal : C.border}`,
+                display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18
+              }}>💧</div>
+          ))}
+        </div>
+        <div style={{ textAlign: "center", color: C.teal, fontSize: 13, fontWeight: 600 }}>
+          {todayHealth.water}/{waterGoal} verres
+        </div>
+        <Progress value={(todayHealth.water / waterGoal) * 100} color={C.teal} style={{ marginTop: 10 }} />
+
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 12, color: C.textDim, marginBottom: 6 }}>Sommeil (heures) :</div>
+          <input type="number" min={0} max={12} step={0.5} value={todayHealth.sleep}
+            onChange={e => upH("sleep", e.target.value)} style={{ width: "100%" }} placeholder="7.5" />
+        </div>
+      </Card>
+
+      {/* Routines */}
+      <Card>
+        <SectionTitle color={C.rose}>🌅 Routines</SectionTitle>
+        <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>Matin :</div>
+        {MATIN_ITEMS.map((item, i) => {
+          const checked = (todayHealth.matin || []).includes(item);
+          return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <Checkbox checked={checked} color={C.gold}
+                onChange={() => {
+                  const arr = todayHealth.matin || [];
+                  upH("matin", checked ? arr.filter(x => x !== item) : [...arr, item]);
+                }} />
+              <span style={{ fontSize: 13, color: checked ? C.textDim : C.text }}>{item}</span>
+            </div>
+          );
+        })}
+        <div style={{ fontSize: 12, color: C.textDim, margin: "10px 0 8px" }}>Soir :</div>
+        {SOIR_ITEMS.map((item, i) => {
+          const checked = (todayHealth.soir || []).includes(item);
+          return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <Checkbox checked={checked} color={C.teal}
+                onChange={() => {
+                  const arr = todayHealth.soir || [];
+                  upH("soir", checked ? arr.filter(x => x !== item) : [...arr, item]);
+                }} />
+              <span style={{ fontSize: 13, color: checked ? C.textDim : C.text }}>{item}</span>
+            </div>
+          );
+        })}
+      </Card>
+    </div>
+  );
+}
+
+// ─── TAB: TÂCHES ─────────────────────────────────────────────────
+function TasksTab({ tasks, setTasks }) {
+  const [newTitle, setNewTitle] = useState("");
+  const [newDue, setNewDue] = useState("");
+  const [newCat, setNewCat] = useState("perso");
+  const [filter, setFilter] = useState("active");
+  const [waiting, setWaiting] = useState(false);
+
+  const CATS = { perso: { label: "Perso", color: C.mauve }, admin: { label: "Admin", color: C.gold }, sante: { label: "Santé", color: C.teal }, etudes: { label: "Études", color: C.rose } };
+
+  const add = () => {
+    if (!newTitle.trim()) return;
+    setTasks(ts => [...ts, { id: uid(), title: newTitle, due: newDue, cat: newCat, done: false, today: false, waiting: waiting, subtasks: [], createdAt: today() }]);
+    setNewTitle(""); setNewDue(""); setWaiting(false);
+  };
+
+  const del = (id) => setTasks(ts => ts.filter(t => t.id !== id));
+  const toggleDone = (id) => setTasks(ts => ts.map(t => t.id === id ? { ...t, done: !t.done, doneAt: today() } : t));
+  const toggleToday = (id) => setTasks(ts => ts.map(t => t.id === id ? { ...t, today: !t.today } : t));
+  const addSub = (id, subTitle) => setTasks(ts => ts.map(t => t.id === id ? { ...t, subtasks: [...(t.subtasks || []), { id: uid(), title: subTitle, done: false }] } : t));
+  const toggleSub = (tid, sid) => setTasks(ts => ts.map(t => t.id === tid ? { ...t, subtasks: t.subtasks.map(s => s.id === sid ? { ...s, done: !s.done } : s) } : t));
+
+  const shown = tasks.filter(t =>
+    filter === "active" ? !t.done && !t.waiting :
+    filter === "today" ? t.today && !t.done :
+    filter === "waiting" ? t.waiting && !t.done :
+    filter === "done" ? t.done : true
+  );
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, alignItems: "start" }}>
+      {/* Ajout */}
+      <Card>
+        <SectionTitle color={C.mauve}>➕ Nouvelle tâche</SectionTitle>
+        <input placeholder="Titre de la tâche..." value={newTitle} onChange={e => setNewTitle(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && add()} style={{ width: "100%", marginBottom: 10 }} />
+        <input type="date" value={newDue} onChange={e => setNewDue(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+        <select value={newCat} onChange={e => setNewCat(e.target.value)} style={{ width: "100%", marginBottom: 10 }}>
+          {Object.entries(CATS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </select>
+        <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, color: C.textDim, cursor: "pointer", marginBottom: 12 }}>
+          <input type="checkbox" checked={waiting} onChange={e => setWaiting(e.target.checked)} style={{ accentColor: C.gold, width: "auto" }} />
+          En attente (quelqu'un d'autre)
+        </label>
+        <Btn onClick={add} style={{ width: "100%" }}>Ajouter ✨</Btn>
+
+        {/* Stats */}
+        <div style={{ marginTop: 20, borderTop: `1px solid ${C.border}`, paddingTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          {Object.entries(CATS).map(([k, v]) => {
+            const n = tasks.filter(t => t.cat === k && !t.done).length;
+            return (
+              <div key={k} style={{ background: C.surface, borderRadius: 10, padding: "8px 12px" }}>
+                <div style={{ color: v.color, fontSize: 11, fontWeight: 700 }}>{v.label}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: C.text }}>{n}</div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* Liste */}
+      <div>
+        {/* Filtres */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+          {[["active","Active"], ["today","Aujourd'hui"], ["waiting","En attente"], ["done","Terminées"]].map(([k,l]) => (
+            <button key={k} onClick={() => setFilter(k)} style={{
+              padding: "6px 14px", borderRadius: 10, fontSize: 12, fontWeight: 600,
+              background: filter === k ? C.mauve + "33" : "transparent",
+              color: filter === k ? C.mauve : C.textDim,
+              border: `1px solid ${filter === k ? C.mauve + "66" : C.border}`
+            }}>{l} <span style={{ opacity: .6 }}>
+              ({tasks.filter(t => k === "active" ? !t.done && !t.waiting : k === "today" ? t.today && !t.done : k === "waiting" ? t.waiting && !t.done : t.done).length})
+            </span></button>
+          ))}
+        </div>
+
+        {shown.length === 0 && (
+          <Card><div style={{ textAlign: "center", color: C.textFaint, padding: "30px 0", fontSize: 14 }}>Aucune tâche ici 🌸</div></Card>
+        )}
+
+        {shown.map(task => (
+          <TaskCard key={task.id} task={task} cats={CATS}
+            onToggleDone={() => toggleDone(task.id)}
+            onToggleToday={() => toggleToday(task.id)}
+            onDelete={() => del(task.id)}
+            onAddSub={(s) => addSub(task.id, s)}
+            onToggleSub={(sid) => toggleSub(task.id, sid)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TaskCard({ task, cats, onToggleDone, onToggleToday, onDelete, onAddSub, onToggleSub }) {
+  const [expanded, setExpanded] = useState(false);
+  const [subInput, setSubInput] = useState("");
+  const cat = cats[task.cat] || cats.perso;
+
+  return (
+    <Card style={{ marginBottom: 10, borderColor: task.today ? C.gold + "44" : C.border }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <Checkbox checked={task.done} onChange={onToggleDone} color={cat.color} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 14, fontWeight: 500, textDecoration: task.done ? "line-through" : "none", color: task.done ? C.textFaint : C.text }}>
+              {task.title}
+            </span>
+            <Badge color={cat.color} small>{cat.label}</Badge>
+            {task.waiting && <Badge color={C.gold} small>⏳ Attente</Badge>}
+            {task.due && <Badge color={isOverdue(task.due) && !task.done ? C.red : C.textFaint} small>{fmt(task.due)}</Badge>}
+            {task.today && !task.done && <Badge color={C.gold} small>⭐ Priorité</Badge>}
+          </div>
+          {task.subtasks?.length > 0 && (
+            <Progress value={task.subtasks.filter(s => s.done).length / task.subtasks.length * 100}
+              color={cat.color} style={{ marginTop: 8, width: 100 }} height={4} />
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button onClick={() => setExpanded(!expanded)} style={{
+            background: "transparent", border: "none", color: C.textDim, fontSize: 14, padding: "2px 6px"
+          }}>{expanded ? "▲" : "▼"}</button>
+          <button onClick={onToggleToday} style={{
+            background: task.today ? C.gold + "22" : "transparent",
+            border: `1px solid ${task.today ? C.gold : C.border}`,
+            color: task.today ? C.gold : C.textDim, borderRadius: 6, fontSize: 12, padding: "2px 6px"
+          }}>⭐</button>
+          <button onClick={onDelete} style={{ background: "transparent", border: "none", color: C.textFaint, padding: "2px 6px" }}>✕</button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+          {task.subtasks?.map(s => (
+            <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <Checkbox checked={s.done} onChange={() => onToggleSub(s.id)} color={cat.color} />
+              <span style={{ fontSize: 13, color: s.done ? C.textFaint : C.text, textDecoration: s.done ? "line-through" : "none" }}>{s.title}</span>
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <input placeholder="Ajouter une sous-tâche..." value={subInput}
+              onChange={e => setSubInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && subInput.trim()) { onAddSub(subInput); setSubInput(""); } }}
+              style={{ flex: 1, fontSize: 12 }} />
+            <Btn small onClick={() => { if (subInput.trim()) { onAddSub(subInput); setSubInput(""); } }}>+</Btn>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ─── TAB: FOCUS (POMODORO) ───────────────────────────────────────
+function FocusTab({ tasks }) {
+  const [mode, setMode] = useState("work");
+  const DURATIONS = { work: 25 * 60, short: 5 * 60, long: 15 * 60 };
+  const [timeLeft, setTimeLeft] = useState(DURATIONS.work);
+  const [running, setRunning] = useState(false);
+  const [sessions, setSessions] = useState(0);
+  const [selectedTask, setSelectedTask] = useState(null);
+  const [logs, setLogs] = useState([]);
+  const intervalRef = useRef(null);
+
+  useEffect(() => {
+    setTimeLeft(DURATIONS[mode]);
+    setRunning(false);
+  }, [mode]);
+
+  useEffect(() => {
+    if (running) {
+      intervalRef.current = setInterval(() => {
+        setTimeLeft(t => {
+          if (t <= 1) {
+            clearInterval(intervalRef.current);
+            setRunning(false);
+            if (mode === "work") {
+              setSessions(s => s + 1);
+              setLogs(l => [...l, { task: selectedTask, time: new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) }]);
+            }
+            return 0;
+          }
+          return t - 1;
+        });
+      }, 1000);
+    } else {
+      clearInterval(intervalRef.current);
+    }
+    return () => clearInterval(intervalRef.current);
+  }, [running, mode]);
+
+  const reset = () => { setTimeLeft(DURATIONS[mode]); setRunning(false); };
+  const mm = String(Math.floor(timeLeft / 60)).padStart(2, "0");
+  const ss = String(timeLeft % 60).padStart(2, "0");
+  const progress = ((DURATIONS[mode] - timeLeft) / DURATIONS[mode]) * 100;
+
+  const radius = 80;
+  const circ = 2 * Math.PI * radius;
+
+  const activeTasks = tasks.filter(t => !t.done);
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, alignItems: "start" }}>
+      {/* Timer */}
+      <Card style={{ textAlign: "center" }}>
+        <SectionTitle color={C.rose}>🍅 Pomodoro Focus</SectionTitle>
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "center", marginBottom: 24, flexWrap: "wrap" }}>
+          {[["work","Travail 25min"], ["short","Pause 5min"], ["long","Longue 15min"]].map(([k,l]) => (
+            <button key={k} onClick={() => setMode(k)} style={{
+              padding: "6px 12px", borderRadius: 10, fontSize: 11, fontWeight: 600,
+              background: mode === k ? C.rose + "33" : "transparent",
+              color: mode === k ? C.rose : C.textDim,
+              border: `1px solid ${mode === k ? C.rose + "66" : C.border}`
+            }}>{l}</button>
+          ))}
+        </div>
+
+        <div style={{ position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 24 }}>
+          <svg width={200} height={200} style={{ transform: "rotate(-90deg)" }}>
+            <circle cx={100} cy={100} r={radius} fill="none" stroke={C.border} strokeWidth={8} />
+            <circle cx={100} cy={100} r={radius} fill="none"
+              stroke={mode === "work" ? C.rose : C.teal}
+              strokeWidth={8} strokeLinecap="round"
+              strokeDasharray={circ}
+              strokeDashoffset={circ * (1 - progress / 100)}
+              style={{ transition: "stroke-dashoffset .5s ease" }} />
+          </svg>
+          <div style={{ position: "absolute", textAlign: "center" }}>
+            <div style={{ fontSize: 36, fontWeight: 700, fontFamily: "Playfair Display" }}>{mm}:{ss}</div>
+            <div style={{ fontSize: 12, color: C.textDim }}>{mode === "work" ? "Focus" : "Pause"}</div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 12, justifyContent: "center", marginBottom: 24 }}>
+          <Btn onClick={reset} outline>↺ Reset</Btn>
+          <button onClick={() => setRunning(!running)} style={{
+            padding: "10px 32px", borderRadius: 12, fontSize: 15, fontWeight: 700,
+            background: running ? C.red + "33" : `linear-gradient(135deg, ${C.rose}44, ${C.mauve}44)`,
+            color: running ? C.red : C.rose, border: `1px solid ${running ? C.red + "66" : C.rose + "66"}`
+          }}>{running ? "⏸ Pause" : "▶ Démarrer"}</button>
+        </div>
+
+        <div style={{ display: "flex", gap: 6, justifyContent: "center", flexWrap: "wrap" }}>
+          {Array.from({ length: Math.max(sessions, 4) }).map((_, i) => (
+            <div key={i} style={{
+              width: 14, height: 14, borderRadius: "50%",
+              background: i < sessions ? C.rose : C.border,
+              border: `2px solid ${i < sessions ? C.rose : C.border}`
+            }} />
+          ))}
+          <span style={{ fontSize: 12, color: C.textDim, marginLeft: 8 }}>{sessions} session{sessions > 1 ? "s" : ""}</span>
+        </div>
+      </Card>
+
+      {/* Tâche en cours */}
+      <Card>
+        <SectionTitle color={C.mauve}>🎯 Tâche en cours</SectionTitle>
+        {activeTasks.length === 0 ? (
+          <div style={{ color: C.textFaint, fontSize: 13 }}>Aucune tâche active</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {activeTasks.slice(0, 6).map(t => (
+              <div key={t.id} onClick={() => setSelectedTask(t.title)} style={{
+                padding: "8px 12px", borderRadius: 10, cursor: "pointer",
+                background: selectedTask === t.title ? C.mauve + "22" : C.surface,
+                border: `1px solid ${selectedTask === t.title ? C.mauve + "66" : "transparent"}`,
+                fontSize: 13, color: selectedTask === t.title ? C.mauve : C.text
+              }}>{t.title}</div>
+            ))}
+          </div>
+        )}
+        {selectedTask && (
+          <div style={{ marginTop: 12, padding: "8px 12px", background: C.mauve + "11", borderRadius: 10, fontSize: 13, color: C.mauve }}>
+            🎯 Focus sur : <strong>{selectedTask}</strong>
+          </div>
+        )}
+
+        <div style={{ marginTop: 16, borderTop: `1px solid ${C.border}`, paddingTop: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.teal, marginBottom: 10 }}>📋 Sessions du jour</div>
+          {logs.length === 0 ? (
+            <div style={{ color: C.textFaint, fontSize: 13 }}>Lance ton premier Pomodoro ! 🍅</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {logs.slice(-6).map((l, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                  <span style={{ color: C.text }}>🍅 {l.task || "Sans tâche"}</span>
+                  <span style={{ color: C.textDim }}>{l.time}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ─── TAB: OBJECTIFS ──────────────────────────────────────────────
+function ObjectifsTab() {
+  const [projects, setProjects] = useStorage("life_projects", [
+    { id: uid(), title: "Bac Pro MCV", color: C.mauve, progress: 40, deadline: "2026-06-30", notes: "", steps: [{ id: uid(), title: "Révisions maths", done: false }, { id: uid(), title: "Dossier PPE", done: true }] },
+    { id: uid(), title: "Vanille & Droit", color: C.teal, progress: 20, deadline: "2027-01-01", notes: "", steps: [] },
+    { id: uid(), title: "Dossier MDPH", color: C.gold, progress: 60, deadline: "2026-07-15", notes: "", steps: [] },
+  ]);
+  const [selected, setSelected] = useState(null);
+  const [newTitle, setNewTitle] = useState("");
+
+  const addProject = () => {
+    if (!newTitle.trim()) return;
+    setProjects(p => [...p, { id: uid(), title: newTitle, color: C.mauve, progress: 0, deadline: "", notes: "", steps: [] }]);
+    setNewTitle("");
+  };
+
+  const updateP = (id, changes) => setProjects(ps => ps.map(p => p.id === id ? { ...p, ...changes } : p));
+  const addStep = (id, title) => updateP(id, { steps: [...(projects.find(p => p.id === id)?.steps || []), { id: uid(), title, done: false }] });
+  const toggleStep = (pid, sid) => {
+    const p = projects.find(x => x.id === pid);
+    updateP(pid, { steps: p.steps.map(s => s.id === sid ? { ...s, done: !s.done } : s) });
+  };
+
+  const sel = projects.find(p => p.id === selected);
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: sel ? "repeat(auto-fit, minmax(280px, 1fr))" : "1fr", gap: 16 }}>
+      <div>
+        <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+          <input placeholder="Nouveau projet..." value={newTitle} onChange={e => setNewTitle(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && addProject()} style={{ flex: 1 }} />
+          <Btn onClick={addProject}>+</Btn>
+        </div>
+
+        {projects.map(p => {
+          const done = (p.steps.filter(s => s.done).length / Math.max(1, p.steps.length)) * 100;
+          const prog = p.steps.length > 0 ? done : p.progress;
+          return (
+            <Card key={p.id} style={{ marginBottom: 12, cursor: "pointer", borderColor: selected === p.id ? p.color + "66" : C.border }}
+              onClick={() => setSelected(selected === p.id ? null : p.id)}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 15 }}>{p.title}</div>
+                  {p.deadline && <div style={{ fontSize: 11, color: C.textDim, marginTop: 2 }}>📅 {fmt(p.deadline)}</div>}
+                </div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: p.color }}>{Math.round(prog)}%</div>
+              </div>
+              <Progress value={prog} color={p.color} />
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <Badge color={p.color} small>{p.steps.filter(s => s.done).length}/{p.steps.length} étapes</Badge>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
+      {sel && (
+        <Card style={{ borderColor: sel.color + "44" }}>
+          <SectionTitle color={sel.color}>🎯 {sel.title}</SectionTitle>
+
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, color: C.textDim, marginBottom: 6 }}>Progression manuelle :</div>
+            <input type="range" min={0} max={100} value={sel.progress}
+              onChange={e => updateP(sel.id, { progress: +e.target.value })}
+              style={{ width: "100%", accentColor: sel.color }} />
+            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              <input type="date" value={sel.deadline} onChange={e => updateP(sel.id, { deadline: e.target.value })} style={{ flex: 1 }} />
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>Étapes :</div>
+            {sel.steps.map(s => (
+              <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <Checkbox checked={s.done} onChange={() => toggleStep(sel.id, s.id)} color={sel.color} />
+                <span style={{ fontSize: 13, textDecoration: s.done ? "line-through" : "none", color: s.done ? C.textFaint : C.text }}>{s.title}</span>
+              </div>
+            ))}
+            <StepAdder onAdd={(t) => addStep(sel.id, t)} color={sel.color} />
+          </div>
+
+          <div>
+            <div style={{ fontSize: 12, color: C.textDim, marginBottom: 6 }}>Notes :</div>
+            <textarea value={sel.notes} onChange={e => updateP(sel.id, { notes: e.target.value })}
+              style={{ width: "100%", height: 80, resize: "none", fontSize: 13 }} placeholder="Notes, idées, liens..." />
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <Btn outline small onClick={() => setProjects(ps => ps.filter(p => p.id !== sel.id))}>🗑 Supprimer</Btn>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function StepAdder({ onAdd, color }) {
+  const [val, setVal] = useState("");
+  return (
+    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+      <input placeholder="Nouvelle étape..." value={val} onChange={e => setVal(e.target.value)}
+        onKeyDown={e => { if (e.key === "Enter" && val.trim()) { onAdd(val); setVal(""); } }}
+        style={{ flex: 1, fontSize: 12 }} />
+      <Btn small color={color} onClick={() => { if (val.trim()) { onAdd(val); setVal(""); } }}>+</Btn>
+    </div>
+  );
+}
+
+// ─── TAB: MOI (Journal + Notes + Santé) ──────────────────────────
+function MoiTab({ journal, tasks }) {
+  const [view, setView] = useState("journal");
+  const [notes, setNotes] = useStorage("life_notes", []);
+  const [newNote, setNewNote] = useState("");
+  const [courses, setCourses] = useStorage("life_courses", []);
+  const [newCourse, setNewCourse] = useState("");
+
+  const entries = Object.entries(journal).sort((a, b) => b[0].localeCompare(a[0]));
+  const victories = tasks.filter(t => t.done).length + entries.filter(([, j]) => j.proud).length;
+
+  const moods7 = entries.slice(0, 7).map(([d, j]) => ({ d, m: j.mood || 3 })).reverse();
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {[["journal","📔 Journal"], ["notes","📝 Notes"], ["courses","🛒 Courses"], ["stats","📊 Humeur"]].map(([k, l]) => (
+          <button key={k} onClick={() => setView(k)} style={{
+            padding: "6px 14px", borderRadius: 10, fontSize: 12, fontWeight: 600,
+            background: view === k ? C.rose + "33" : "transparent",
+            color: view === k ? C.rose : C.textDim,
+            border: `1px solid ${view === k ? C.rose + "66" : C.border}`
+          }}>{l}</button>
+        ))}
+      </div>
+
+      <Card style={{ marginBottom: 16, background: `linear-gradient(135deg, ${C.gold}18, ${C.rose}11)`, borderColor: C.gold + "44" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ fontSize: 40 }}>🏆</div>
+          <div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.gold }}>{victories} victoires</div>
+            <div style={{ fontSize: 12, color: C.textDim }}>au total depuis le début ✨</div>
+          </div>
+        </div>
+      </Card>
+
+      {view === "journal" && (
+        <div style={{ display: "grid", gap: 12 }}>
+          {entries.length === 0 && (
+            <Card><div style={{ textAlign: "center", color: C.textFaint, padding: "30px 0" }}>Commence ton journal depuis l'onglet Aujourd'hui 🌸</div></Card>
+          )}
+          {entries.slice(0, 10).map(([date, entry]) => (
+            <Card key={date}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{new Date(date + "T12:00:00").toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })}</div>
+                <div style={{ fontSize: 24 }}>{MOODS[entry.mood || 3]}</div>
+              </div>
+              {entry.note && <p style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>{entry.note}</p>}
+              {entry.proud && (
+                <div style={{ background: C.gold + "22", borderRadius: 8, padding: "6px 10px", fontSize: 13, color: C.gold }}>
+                  🌟 {entry.proud}
+                </div>
+              )}
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {view === "notes" && (
+        <div>
+          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+            <input placeholder="Nouvelle note rapide..." value={newNote} onChange={e => setNewNote(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && newNote.trim()) { setNotes(n => [{ id: uid(), text: newNote, date: today() }, ...n]); setNewNote(""); } }}
+              style={{ flex: 1 }} />
+            <Btn onClick={() => { if (newNote.trim()) { setNotes(n => [{ id: uid(), text: newNote, date: today() }, ...n]); setNewNote(""); } }}>+</Btn>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}>
+            {notes.map(n => (
+              <div key={n.id} style={{
+                background: C.card, borderRadius: 14, padding: 14, border: `1px solid ${C.border}`,
+                position: "relative"
+              }}>
+                <button onClick={() => setNotes(ns => ns.filter(x => x.id !== n.id))} style={{
+                  position: "absolute", top: 8, right: 8, background: "transparent", border: "none",
+                  color: C.textFaint, fontSize: 12, cursor: "pointer"
+                }}>✕</button>
+                <p style={{ fontSize: 13, color: C.text, lineHeight: 1.5, paddingRight: 16 }}>{n.text}</p>
+                <div style={{ fontSize: 11, color: C.textFaint, marginTop: 8 }}>{fmt(n.date)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {view === "courses" && (
+        <Card>
+          <SectionTitle color={C.teal}>🛒 Liste de courses</SectionTitle>
+          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+            <input placeholder="Ajouter un article..." value={newCourse} onChange={e => setNewCourse(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && newCourse.trim()) { setCourses(c => [...c, { id: uid(), name: newCourse, done: false }]); setNewCourse(""); } }}
+              style={{ flex: 1 }} />
+            <Btn color={C.teal} onClick={() => { if (newCourse.trim()) { setCourses(c => [...c, { id: uid(), name: newCourse, done: false }]); setNewCourse(""); } }}>+</Btn>
+          </div>
+          {courses.map(c => (
+            <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+              <Checkbox checked={c.done} onChange={() => setCourses(cs => cs.map(x => x.id === c.id ? { ...x, done: !x.done } : x))} color={C.teal} />
+              <span style={{ flex: 1, textDecoration: c.done ? "line-through" : "none", color: c.done ? C.textFaint : C.text, fontSize: 14 }}>{c.name}</span>
+              <button onClick={() => setCourses(cs => cs.filter(x => x.id !== c.id))} style={{ background: "transparent", border: "none", color: C.textFaint, cursor: "pointer" }}>✕</button>
+            </div>
+          ))}
+          {courses.some(c => c.done) && (
+            <Btn small outline style={{ marginTop: 10 }} onClick={() => setCourses(cs => cs.filter(c => !c.done))}>
+              🧹 Effacer les cochés
+            </Btn>
+          )}
+        </Card>
+      )}
+
+      {view === "stats" && (
+        <Card>
+          <SectionTitle color={C.mauve}>📊 Humeur des 7 derniers jours</SectionTitle>
+          {moods7.length === 0 ? (
+            <div style={{ color: C.textFaint, textAlign: "center", padding: 20 }}>Pas encore de données</div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 12, height: 120, padding: "10px 0" }}>
+              {moods7.map(({ d, m }) => (
+                <div key={d} style={{ flex: 1, textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                  <div style={{ fontSize: 16 }}>{MOODS[m]}</div>
+                  <div style={{
+                    width: "100%", height: `${(m / 6) * 80}px`,
+                    background: `linear-gradient(to top, ${C.mauve}88, ${C.rose}66)`,
+                    borderRadius: "6px 6px 0 0", minHeight: 8
+                  }} />
+                  <div style={{ fontSize: 10, color: C.textFaint }}>{new Date(d + "T12:00:00").toLocaleDateString("fr-FR", { weekday: "short" })}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+            <div style={{ background: C.surface, borderRadius: 10, padding: 10, textAlign: "center" }}>
+              <div style={{ fontSize: 20 }}>📔</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: C.mauve }}>{entries.length}</div>
+              <div style={{ fontSize: 11, color: C.textDim }}>entrées</div>
+            </div>
+            <div style={{ background: C.surface, borderRadius: 10, padding: 10, textAlign: "center" }}>
+              <div style={{ fontSize: 20 }}>🌟</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: C.gold }}>{entries.filter(([, j]) => j.proud).length}</div>
+              <div style={{ fontSize: 11, color: C.textDim }}>fiertés</div>
+            </div>
+            <div style={{ background: C.surface, borderRadius: 10, padding: 10, textAlign: "center" }}>
+              <div style={{ fontSize: 20 }}>💗</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: C.rose }}>
+                {moods7.length > 0 ? MOODS[Math.round(moods7.reduce((a, x) => a + x.m, 0) / moods7.length)] : "–"}
+              </div>
+              <div style={{ fontSize: 11, color: C.textDim }}>moy. semaine</div>
+            </div>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ─── TAB: PLUS ───────────────────────────────────────────────────
+function PlusTab() {
+  const [view, setView] = useState("admin");
+  const [dossiers, setDossiers] = useStorage("life_dossiers", [
+    { id: uid(), title: "Dossier MDPH", status: "en cours", steps: "Rassembler pièces justificatives", color: C.gold, updatedAt: today() },
+    { id: uid(), title: "CPAM - Affection longue durée", status: "attente", steps: "En attente de réponse", color: C.mauve, updatedAt: today() },
+  ]);
+  const [budget, setBudget] = useStorage("life_budget", { revenus: 0, depenses: [], objectifs: [] });
+  const [visionWords, setVisionWords] = useStorage("life_vision", ["Résilience", "Étudier", "Indépendance", "Sérénité", "Créativité", "Foi"]);
+  const [newWord, setNewWord] = useState("");
+  const [newDep, setNewDep] = useState({ label: "", amount: 0 });
+  const [newDos, setNewDos] = useState("");
+
+  const STATUTS = { "en cours": C.teal, "attente": C.gold, "terminé": C.green, "bloqué": C.red };
+
+  const depTotal = budget.depenses.reduce((a, d) => a + (+d.amount || 0), 0);
+  const solde = budget.revenus - depTotal;
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {[["admin","📋 Démarches"], ["budget","💰 Budget"], ["vision","🌠 Vision Board"], ["save","💾 Sauvegarde"]].map(([k, l]) => (
+          <button key={k} onClick={() => setView(k)} style={{
+            padding: "6px 14px", borderRadius: 10, fontSize: 12, fontWeight: 600,
+            background: view === k ? C.teal + "33" : "transparent",
+            color: view === k ? C.teal : C.textDim,
+            border: `1px solid ${view === k ? C.teal + "66" : C.border}`
+          }}>{l}</button>
+        ))}
+      </div>
+
+      {view === "admin" && (
+        <div>
+          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+            <input placeholder="Nouveau dossier..." value={newDos} onChange={e => setNewDos(e.target.value)} style={{ flex: 1 }} />
+            <Btn color={C.teal} onClick={() => { if (newDos.trim()) { setDossiers(d => [...d, { id: uid(), title: newDos, status: "en cours", steps: "", color: C.teal, updatedAt: today() }]); setNewDos(""); } }}>+</Btn>
+          </div>
+          {dossiers.map(d => (
+            <Card key={d.id} style={{ marginBottom: 12, borderColor: (STATUTS[d.status] || C.border) + "44" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8, gap: 8 }}>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{d.title}</div>
+                <select value={d.status} onChange={e => setDossiers(ds => ds.map(x => x.id === d.id ? { ...x, status: e.target.value, updatedAt: today() } : x))}
+                  style={{ fontSize: 11, padding: "3px 8px", background: (STATUTS[d.status] || C.border) + "33", color: STATUTS[d.status] || C.text, border: "none" }}>
+                  {Object.keys(STATUTS).map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <textarea value={d.steps} onChange={e => setDossiers(ds => ds.map(x => x.id === d.id ? { ...x, steps: e.target.value } : x))}
+                placeholder="Étapes, notes..." style={{ width: "100%", fontSize: 12, height: 50, resize: "none" }} />
+              <div style={{ fontSize: 11, color: C.textFaint, marginTop: 4 }}>Mis à jour : {fmt(d.updatedAt)}</div>
+              <Btn small outline style={{ marginTop: 8 }} onClick={() => setDossiers(ds => ds.filter(x => x.id !== d.id))}>🗑 Supprimer</Btn>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {view === "budget" && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
+          <div>
+            <Card style={{ marginBottom: 16 }}>
+              <SectionTitle color={C.gold}>💰 Revenus</SectionTitle>
+              <input type="number" value={budget.revenus} onChange={e => setBudget(b => ({ ...b, revenus: +e.target.value }))}
+                style={{ width: "100%", fontSize: 20, fontWeight: 700 }} placeholder="0" />
+              <div style={{ fontSize: 12, color: C.textDim, marginTop: 4 }}>€ / mois</div>
+            </Card>
+            <Card>
+              <SectionTitle color={solde >= 0 ? C.teal : C.red}>Solde</SectionTitle>
+              <div style={{ fontSize: 28, fontWeight: 700, color: solde >= 0 ? C.teal : C.red }}>
+                {solde >= 0 ? "+" : ""}{solde.toFixed(2)}€
+              </div>
+              <Progress value={Math.min(100, (depTotal / Math.max(1, budget.revenus)) * 100)}
+                color={solde >= 0 ? C.teal : C.red} style={{ marginTop: 10 }} />
+              <div style={{ fontSize: 11, color: C.textDim, marginTop: 4 }}>{depTotal.toFixed(2)}€ dépensés / {budget.revenus}€</div>
+            </Card>
+          </div>
+          <Card>
+            <SectionTitle color={C.rose}>💸 Dépenses</SectionTitle>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <input placeholder="Label..." value={newDep.label} onChange={e => setNewDep(d => ({ ...d, label: e.target.value }))} style={{ flex: 2 }} />
+              <input type="number" placeholder="€" value={newDep.amount || ""} onChange={e => setNewDep(d => ({ ...d, amount: e.target.value }))} style={{ flex: 1 }} />
+              <Btn color={C.rose} onClick={() => {
+                if (newDep.label && newDep.amount) {
+                  setBudget(b => ({ ...b, depenses: [...b.depenses, { id: uid(), ...newDep }] }));
+                  setNewDep({ label: "", amount: 0 });
+                }
+              }}>+</Btn>
+            </div>
+            {budget.depenses.map(d => (
+              <div key={d.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <span style={{ fontSize: 13 }}>{d.label}</span>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ color: C.rose, fontWeight: 600 }}>-{d.amount}€</span>
+                  <button onClick={() => setBudget(b => ({ ...b, depenses: b.depenses.filter(x => x.id !== d.id) }))} style={{ background: "transparent", border: "none", color: C.textFaint, cursor: "pointer" }}>✕</button>
+                </div>
+              </div>
+            ))}
+          </Card>
+        </div>
+      )}
+
+      {view === "vision" && (
+        <div>
+          <Card style={{ marginBottom: 16 }}>
+            <SectionTitle color={C.mauve}>🌠 Mon Vision Board</SectionTitle>
+            <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+              <input placeholder="Ajouter un mot, une intention..." value={newWord} onChange={e => setNewWord(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && newWord.trim()) { setVisionWords(w => [...w, newWord]); setNewWord(""); } }}
+                style={{ flex: 1 }} />
+              <Btn color={C.mauveLight} onClick={() => { if (newWord.trim()) { setVisionWords(w => [...w, newWord]); setNewWord(""); } }}>+</Btn>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, minHeight: 100 }}>
+              {visionWords.map((w, i) => {
+                const colors = [C.mauve, C.teal, C.rose, C.gold, C.mauveLight];
+                const c = colors[i % colors.length];
+                const sizes = [14, 16, 20, 18, 15];
+                return (
+                  <div key={i} onClick={() => setVisionWords(ws => ws.filter((_, j) => j !== i))}
+                    style={{
+                      background: c + "22", color: c, border: `1px solid ${c}44`,
+                      borderRadius: 99, padding: "6px 16px", fontSize: sizes[i % sizes.length],
+                      cursor: "pointer", fontWeight: 600, fontFamily: "Playfair Display",
+                      fontStyle: i % 3 === 2 ? "italic" : "normal"
+                    }}>{w}</div>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: C.textFaint, marginTop: 8 }}>Clique sur un mot pour le retirer</div>
+          </Card>
+        </div>
+      )}
+
+      {view === "save" && <SaveView />}
+    </div>
+  );
+}
+
+// ─── SAUVEGARDE / RESTAURATION ───────────────────────────────────
+function SaveView() {
+  const [msg, setMsg] = useState("");
+  const fileRef = useRef(null);
+
+  const exportData = () => {
+    const data = {};
+    STORAGE_KEYS.forEach(k => {
+      const v = localStorage.getItem(k);
+      if (v != null) data[k] = v;
+    });
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `gabos-sauvegarde-${today()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setMsg("✅ Sauvegarde téléchargée !");
+  };
+
+  const importData = (file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target.result);
+        Object.entries(data).forEach(([k, v]) => {
+          if (STORAGE_KEYS.includes(k)) localStorage.setItem(k, v);
+        });
+        setMsg("✅ Données restaurées ! Rechargement...");
+        setTimeout(() => location.reload(), 800);
+      } catch {
+        setMsg("❌ Fichier invalide.");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  return (
+    <Card>
+      <SectionTitle color={C.gold}>💾 Sauvegarde & Restauration</SectionTitle>
+      <p style={{ fontSize: 13, color: C.textDim, lineHeight: 1.6, marginBottom: 16 }}>
+        Tes données restent sur ton téléphone. Pour éviter toute perte (changement de
+        téléphone, nettoyage de Safari...), pense à <strong style={{ color: C.text }}>exporter
+        une sauvegarde de temps en temps</strong>. Tu pourras la réimporter à tout moment.
+      </p>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Btn color={C.teal} onClick={exportData} style={{ width: "100%" }}>
+          ⬇️ Exporter mes données (.json)
+        </Btn>
+        <Btn color={C.mauve} outline onClick={() => fileRef.current?.click()} style={{ width: "100%" }}>
+          ⬆️ Importer une sauvegarde
+        </Btn>
+        <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: "none" }}
+          onChange={e => { if (e.target.files[0]) importData(e.target.files[0]); }} />
+      </div>
+
+      {msg && (
+        <div style={{ marginTop: 14, padding: "8px 12px", background: C.surface, borderRadius: 10, fontSize: 13, color: C.text }}>
+          {msg}
+        </div>
+      )}
+
+      <div style={{ marginTop: 20, borderTop: `1px solid ${C.border}`, paddingTop: 16, fontSize: 12, color: C.textFaint, lineHeight: 1.6 }}>
+        💡 Astuce : envoie-toi le fichier de sauvegarde par mail ou enregistre-le dans
+        « Fichiers » / iCloud pour le garder en sécurité.
+      </div>
+    </Card>
+  );
+}
+
+// ─── APP ─────────────────────────────────────────────────────────
+function App() {
+  const [tab, setTab] = useState("today");
+  const [tasks, setTasks] = useStorage("life_tasks", []);
+  const [journal, setJournal] = useStorage("life_journal", {});
+  const [health, setHealth] = useStorage("life_health", {});
+
+  const TABS = [
+    { id: "today", icon: "☀️", label: "Aujourd'hui" },
+    { id: "tasks", icon: "📋", label: "Tâches" },
+    { id: "focus", icon: "🍅", label: "Focus" },
+    { id: "goals", icon: "🎯", label: "Objectifs" },
+    { id: "moi", icon: "🌸", label: "Moi" },
+    { id: "plus", icon: "✨", label: "Plus" },
+  ];
+
+  const doneTodayCount = tasks.filter(t => t.done && t.doneAt === today()).length;
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg }}>
+      <style>{GS}</style>
+
+      {/* Header */}
+      <div style={{
+        background: `linear-gradient(135deg, ${C.surface}, ${C.card})`,
+        borderBottom: `1px solid ${C.border}`,
+        padding: "12px 24px",
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        position: "sticky", top: 0, zIndex: 100
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ fontSize: 20, fontFamily: "Playfair Display", fontWeight: 700 }}>
+            <span style={{ color: C.mauve }}>Gab</span>
+            <span style={{ color: C.textDim }}>OS</span>
+          </div>
+          <div style={{ width: 1, height: 20, background: C.border }} />
+          <div style={{ fontSize: 12, color: C.textDim }}>
+            {new Date().toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {doneTodayCount > 0 && <Badge color={C.teal} small>✓ {doneTodayCount} aujourd'hui</Badge>}
+          <Badge color={C.mauve} small>{tasks.filter(t => !t.done).length} actives</Badge>
+        </div>
+      </div>
+
+      {/* Nav */}
+      <div style={{
+        display: "flex", gap: 4, padding: "8px 16px",
+        borderBottom: `1px solid ${C.border}`,
+        background: C.surface, overflowX: "auto",
+        position: "sticky", top: 49, zIndex: 99
+      }}>
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)} style={{
+            padding: "8px 16px", borderRadius: 12, border: "none",
+            background: tab === t.id ? C.mauve + "33" : "transparent",
+            color: tab === t.id ? C.mauve : C.textDim,
+            fontSize: 13, fontWeight: tab === t.id ? 700 : 400,
+            whiteSpace: "nowrap", outline: "none",
+            borderBottom: tab === t.id ? `2px solid ${C.mauve}` : "2px solid transparent"
+          }}>
+            {t.icon} {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Content */}
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px 48px" }}>
+        {tab === "today" && <TodayTab tasks={tasks} setTasks={setTasks} journal={journal} setJournal={setJournal} health={health} setHealth={setHealth} />}
+        {tab === "tasks" && <TasksTab tasks={tasks} setTasks={setTasks} />}
+        {tab === "focus" && <FocusTab tasks={tasks} />}
+        {tab === "goals" && <ObjectifsTab />}
+        {tab === "moi" && <MoiTab journal={journal} tasks={tasks} />}
+        {tab === "plus" && <PlusTab />}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+
+// ─── Service Worker (mode hors-ligne) ────────────────────────────
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
+  </script>
+</body>
+</html>
