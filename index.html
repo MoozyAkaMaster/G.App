@@ -1003,6 +1003,43 @@ function MoiTab({ journal, tasks }) {
   );
 }
 
+// ─── MONTANTS (budget) : virgule OU point, clavier décimal ───────
+// Renvoie toujours un float (0 si invalide). Accepte nombre ou chaîne.
+function parseAmount(str) {
+  if (typeof str === "number") return isFinite(str) ? str : 0;
+  if (!str) return 0;
+  let v = String(str).replace(/\s/g, "").replace(",", ".").replace(/[^0-9.]/g, "");
+  const parts = v.split(".");
+  if (parts.length > 1) v = parts[0] + "." + parts.slice(1).join("");
+  const n = parseFloat(v);
+  return isFinite(n) ? n : 0;
+}
+
+// Affiche un montant avec la virgule française
+function formatAmount(n) {
+  const v = parseAmount(n);
+  return (Number.isInteger(v) ? String(v) : v.toFixed(2)).replace(".", ",");
+}
+
+// Champ de saisie de montant réutilisable (texte + clavier décimal)
+function AmountInput({ value, onChange, placeholder = "€", style }) {
+  const handle = (e) => {
+    let v = e.target.value.replace(/[^0-9.,]/g, "");          // chiffres + séparateurs
+    const i = v.search(/[.,]/);
+    if (i !== -1) v = v.slice(0, i + 1) + v.slice(i + 1).replace(/[.,]/g, ""); // un seul séparateur
+    onChange(v);
+  };
+  return (
+    <input
+      type="text" inputMode="decimal" placeholder={placeholder}
+      value={value == null ? "" : String(value).replace(".", ",")}
+      onChange={handle}
+      onFocus={e => { if (!value || parseAmount(value) === 0) e.target.select(); }}
+      style={style}
+    />
+  );
+}
+
 // ─── TAB: PLUS ───────────────────────────────────────────────────
 function PlusTab() {
   const [view, setView] = useState("admin");
@@ -1010,16 +1047,45 @@ function PlusTab() {
     { id: uid(), title: "Dossier MDPH", status: "en cours", steps: "Rassembler pièces justificatives", color: C.gold, updatedAt: today() },
     { id: uid(), title: "CPAM - Affection longue durée", status: "attente", steps: "En attente de réponse", color: C.mauve, updatedAt: today() },
   ]);
-  const [budget, setBudget] = useStorage("life_budget", { revenus: 0, depenses: [], objectifs: [] });
+  const [budget, setBudget] = useStorage("life_budget", { revenus: [], depenses: [], objectifs: [] });
   const [visionWords, setVisionWords] = useStorage("life_vision", ["Résilience", "Étudier", "Indépendance", "Sérénité", "Créativité", "Foi"]);
   const [newWord, setNewWord] = useState("");
-  const [newDep, setNewDep] = useState({ label: "", amount: 0 });
+  const [newDep, setNewDep] = useState({ label: "", amount: "", frequence: "ponctuel" });
+  const [newRev, setNewRev] = useState({ sel: "Salaire", custom: "", label: "", amount: "" });
   const [newDos, setNewDos] = useState("");
 
   const STATUTS = { "en cours": C.teal, "attente": C.gold, "terminé": C.green, "bloqué": C.red };
+  const REV_TYPES = ["Salaire", "MDPH", "CAF / Allocations", "Autre"];
+  const FREQ = { mensuel: C.teal, annuel: C.gold, ponctuel: C.mauve };
 
-  const depTotal = budget.depenses.reduce((a, d) => a + (+d.amount || 0), 0);
-  const solde = budget.revenus - depTotal;
+  // Migration douce : ancien format budget.revenus = nombre -> tableau de sources
+  useEffect(() => {
+    if (!Array.isArray(budget.revenus)) {
+      setBudget(b => ({
+        ...b,
+        revenus: parseAmount(b.revenus) > 0
+          ? [{ id: uid(), type: "Salaire", label: "", amount: String(b.revenus) }]
+          : [],
+      }));
+    }
+  }, []); // une seule fois au montage
+
+  const revenus = Array.isArray(budget.revenus) ? budget.revenus : [];
+  const depTotal = budget.depenses.reduce((a, d) => a + parseAmount(d.amount), 0);
+  const totalRevenus = Array.isArray(budget.revenus)
+    ? budget.revenus.reduce((a, r) => a + parseAmount(r.amount), 0)
+    : parseAmount(budget.revenus);
+  const solde = totalRevenus - depTotal;
+
+  const addRevenu = () => {
+    if (!parseAmount(newRev.amount)) return;
+    let type = newRev.sel, label = "";
+    if (newRev.sel === "Personnalisé…") type = newRev.custom.trim() || "Autre";
+    else if (newRev.sel === "Autre") label = newRev.label.trim();
+    setBudget(b => ({ ...b, revenus: [...(Array.isArray(b.revenus) ? b.revenus : []), { id: uid(), type, label, amount: newRev.amount }] }));
+    setNewRev({ sel: "Salaire", custom: "", label: "", amount: "" });
+  };
+  const delRevenu = (id) => setBudget(b => ({ ...b, revenus: (Array.isArray(b.revenus) ? b.revenus : []).filter(r => r.id !== id) }));
 
   return (
     <div>
@@ -1061,43 +1127,92 @@ function PlusTab() {
       {view === "budget" && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
           <div>
+            {/* Revenus : plusieurs sources typées */}
             <Card style={{ marginBottom: 16 }}>
-              <SectionTitle color={C.gold}>💰 Revenus</SectionTitle>
-              <input type="number" value={budget.revenus} onChange={e => setBudget(b => ({ ...b, revenus: +e.target.value }))}
-                style={{ width: "100%", fontSize: 20, fontWeight: 700 }} placeholder="0" />
-              <div style={{ fontSize: 12, color: C.textDim, marginTop: 4 }}>€ / mois</div>
+              <SectionTitle color={C.gold} action={<Badge color={C.gold} small>{formatAmount(totalRevenus)}€</Badge>}>💰 Revenus</SectionTitle>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+                <select value={newRev.sel} onChange={e => setNewRev(r => ({ ...r, sel: e.target.value }))} style={{ width: "100%" }}>
+                  {REV_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  <option value="Personnalisé…">Personnalisé…</option>
+                </select>
+                {newRev.sel === "Personnalisé…" && (
+                  <input placeholder="Nom du type (ex: Pension, Bourse...)" value={newRev.custom}
+                    onChange={e => setNewRev(r => ({ ...r, custom: e.target.value }))} style={{ width: "100%" }} />
+                )}
+                {newRev.sel === "Autre" && (
+                  <input placeholder="Préciser (ex: Pension...)" value={newRev.label}
+                    onChange={e => setNewRev(r => ({ ...r, label: e.target.value }))} style={{ width: "100%" }} />
+                )}
+                <div style={{ display: "flex", gap: 8 }}>
+                  <AmountInput value={newRev.amount} onChange={v => setNewRev(r => ({ ...r, amount: v }))}
+                    placeholder="Montant €" style={{ flex: 1 }} />
+                  <Btn color={C.gold} onClick={addRevenu}>+</Btn>
+                </div>
+              </div>
+
+              {revenus.length === 0 ? (
+                <div style={{ fontSize: 12, color: C.textFaint }}>Aucune source de revenu</div>
+              ) : revenus.map(r => (
+                <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 13 }}>{r.type}{r.label ? " — " + r.label : ""}</span>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ color: C.gold, fontWeight: 600 }}>{formatAmount(r.amount)}€</span>
+                    <button onClick={() => delRevenu(r.id)} style={{ background: "transparent", border: "none", color: C.textFaint, cursor: "pointer" }}>✕</button>
+                  </div>
+                </div>
+              ))}
             </Card>
+
             <Card>
               <SectionTitle color={solde >= 0 ? C.teal : C.red}>Solde</SectionTitle>
               <div style={{ fontSize: 28, fontWeight: 700, color: solde >= 0 ? C.teal : C.red }}>
-                {solde >= 0 ? "+" : ""}{solde.toFixed(2)}€
+                {solde >= 0 ? "+" : ""}{formatAmount(solde)}€
               </div>
-              <Progress value={Math.min(100, (depTotal / Math.max(1, budget.revenus)) * 100)}
+              <Progress value={Math.min(100, (depTotal / Math.max(1, totalRevenus)) * 100)}
                 color={solde >= 0 ? C.teal : C.red} style={{ marginTop: 10 }} />
-              <div style={{ fontSize: 11, color: C.textDim, marginTop: 4 }}>{depTotal.toFixed(2)}€ dépensés / {budget.revenus}€</div>
+              <div style={{ fontSize: 11, color: C.textDim, marginTop: 4 }}>{formatAmount(depTotal)}€ dépensés / {formatAmount(totalRevenus)}€</div>
             </Card>
           </div>
+
+          {/* Dépenses avec fréquence */}
           <Card>
             <SectionTitle color={C.rose}>💸 Dépenses</SectionTitle>
-            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
               <input placeholder="Label..." value={newDep.label} onChange={e => setNewDep(d => ({ ...d, label: e.target.value }))} style={{ flex: 2 }} />
-              <input type="number" placeholder="€" value={newDep.amount || ""} onChange={e => setNewDep(d => ({ ...d, amount: e.target.value }))} style={{ flex: 1 }} />
-              <Btn color={C.rose} onClick={() => {
-                if (newDep.label && newDep.amount) {
-                  setBudget(b => ({ ...b, depenses: [...b.depenses, { id: uid(), ...newDep }] }));
-                  setNewDep({ label: "", amount: 0 });
-                }
-              }}>+</Btn>
+              <AmountInput value={newDep.amount} onChange={v => setNewDep(d => ({ ...d, amount: v }))} placeholder="€" style={{ flex: 1, minWidth: 0 }} />
             </div>
-            {budget.depenses.map(d => (
-              <div key={d.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                <span style={{ fontSize: 13 }}>{d.label}</span>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ color: C.rose, fontWeight: 600 }}>-{d.amount}€</span>
-                  <button onClick={() => setBudget(b => ({ ...b, depenses: b.depenses.filter(x => x.id !== d.id) }))} style={{ background: "transparent", border: "none", color: C.textFaint, cursor: "pointer" }}>✕</button>
+            <div style={{ display: "flex", gap: 6, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+              {Object.keys(FREQ).map(f => (
+                <button key={f} onClick={() => setNewDep(d => ({ ...d, frequence: f }))} style={{
+                  padding: "5px 12px", borderRadius: 10, fontSize: 12, fontWeight: 600, textTransform: "capitalize",
+                  background: newDep.frequence === f ? FREQ[f] + "33" : "transparent",
+                  color: newDep.frequence === f ? FREQ[f] : C.textDim,
+                  border: `1px solid ${newDep.frequence === f ? FREQ[f] + "66" : C.border}`
+                }}>{f}</button>
+              ))}
+              <Btn color={C.rose} small style={{ marginLeft: "auto" }} onClick={() => {
+                if (newDep.label.trim() && parseAmount(newDep.amount)) {
+                  setBudget(b => ({ ...b, depenses: [...b.depenses, { id: uid(), label: newDep.label.trim(), amount: newDep.amount, frequence: newDep.frequence }] }));
+                  setNewDep({ label: "", amount: "", frequence: "ponctuel" });
+                }
+              }}>Ajouter</Btn>
+            </div>
+            {budget.depenses.map(d => {
+              const f = d.frequence || "ponctuel";
+              return (
+                <div key={d.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <span style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</span>
+                    <Badge color={FREQ[f] || C.mauve} small>{f}</Badge>
+                  </span>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
+                    <span style={{ color: C.rose, fontWeight: 600 }}>-{formatAmount(d.amount)}€</span>
+                    <button onClick={() => setBudget(b => ({ ...b, depenses: b.depenses.filter(x => x.id !== d.id) }))} style={{ background: "transparent", border: "none", color: C.textFaint, cursor: "pointer" }}>✕</button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </Card>
         </div>
       )}
