@@ -1040,6 +1040,41 @@ function AmountInput({ value, onChange, placeholder = "€", style }) {
   );
 }
 
+// ─── CYCLE BUDGÉTAIRE & ÉCHÉANCES ────────────────────────────────
+const MOIS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+const pad2 = (n) => String(n).padStart(2, "0");
+
+// Début du cycle en cours selon le jour de paie (1-28) et la date du jour
+function getCurrentCycleStart(day) {
+  const d = Math.min(Math.max(parseInt(day) || 1, 1), 28);
+  const now = new Date();
+  let y = now.getFullYear(), m = now.getMonth();
+  if (now.getDate() < d) { m -= 1; if (m < 0) { m = 11; y -= 1; } }
+  return `${y}-${pad2(m + 1)}-${pad2(d)}`;
+}
+// Jour précédant une date ISO (pour la fin du cycle archivé)
+function dayBefore(iso) {
+  const dt = new Date(iso + "T12:00:00");
+  dt.setDate(dt.getDate() - 1);
+  return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
+}
+// Fin du cycle courant = veille du même jour le mois suivant
+function cycleEndFromStart(iso) {
+  const dt = new Date(iso + "T12:00:00");
+  dt.setMonth(dt.getMonth() + 1);
+  dt.setDate(dt.getDate() - 1);
+  return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
+}
+const fmtJourMois = (iso) => iso ? new Date(iso + "T12:00:00").toLocaleDateString("fr-FR", { day: "numeric", month: "long" }) : "";
+
+// Texte d'échéance d'une dépense récurrente
+function fmtEcheance(d) {
+  const f = d.frequence || "ponctuel";
+  if (f === "mensuel" && d.jourEcheance) return `le ${d.jourEcheance} de chaque mois`;
+  if (f === "annuel" && d.jourEcheance && d.moisEcheance) return `le ${d.jourEcheance} ${MOIS_FR[d.moisEcheance - 1]}`;
+  return "";
+}
+
 // ─── TAB: PLUS ───────────────────────────────────────────────────
 function PlusTab() {
   const [view, setView] = useState("admin");
@@ -1047,12 +1082,13 @@ function PlusTab() {
     { id: uid(), title: "Dossier MDPH", status: "en cours", steps: "Rassembler pièces justificatives", color: C.gold, updatedAt: today() },
     { id: uid(), title: "CPAM - Affection longue durée", status: "attente", steps: "En attente de réponse", color: C.mauve, updatedAt: today() },
   ]);
-  const [budget, setBudget] = useStorage("life_budget", { revenus: [], depenses: [], objectifs: [] });
+  const [budget, setBudget] = useStorage("life_budget", { revenus: [], depenses: [], objectifs: [], cycleStartDay: 1, currentCycleStart: "", archives: [] });
   const [visionWords, setVisionWords] = useStorage("life_vision", ["Résilience", "Étudier", "Indépendance", "Sérénité", "Créativité", "Foi"]);
   const [newWord, setNewWord] = useState("");
-  const [newDep, setNewDep] = useState({ label: "", amount: "", frequence: "ponctuel" });
+  const [newDep, setNewDep] = useState({ label: "", amount: "", frequence: "ponctuel", jourEcheance: "", moisEcheance: "" });
   const [newRev, setNewRev] = useState({ sel: "Salaire", custom: "", label: "", amount: "" });
   const [newDos, setNewDos] = useState("");
+  const [showArchives, setShowArchives] = useState(false);
 
   const STATUTS = { "en cours": C.teal, "attente": C.gold, "terminé": C.green, "bloqué": C.red };
   const REV_TYPES = ["Salaire", "MDPH", "CAF / Allocations", "Autre"];
@@ -1069,6 +1105,41 @@ function PlusTab() {
       }));
     }
   }, []); // une seule fois au montage
+
+  // Cycle budgétaire : init au 1er chargement, puis archivage des ponctuelles à chaque nouveau cycle
+  useEffect(() => {
+    setBudget(b => {
+      const day = (b.cycleStartDay >= 1 && b.cycleStartDay <= 28) ? b.cycleStartDay : 1;
+      const calcStart = getCurrentCycleStart(day);
+      const archives = Array.isArray(b.archives) ? b.archives : [];
+      // déjà à jour : ne rien réécrire (idempotent)
+      if (b.currentCycleStart === calcStart && b.cycleStartDay === day && Array.isArray(b.archives)) return b;
+      // première utilisation : on initialise sans archiver
+      if (!b.currentCycleStart) return { ...b, cycleStartDay: day, currentCycleStart: calcStart, archives };
+      // nouveau cycle détecté : on archive les dépenses ponctuelles du cycle écoulé
+      if (b.currentCycleStart !== calcStart) {
+        const dep = Array.isArray(b.depenses) ? b.depenses : [];
+        const ponctuelles = dep.filter(d => (d.frequence || "ponctuel") === "ponctuel");
+        const recurrentes = dep.filter(d => (d.frequence || "ponctuel") !== "ponctuel");
+        return {
+          ...b, cycleStartDay: day, currentCycleStart: calcStart, depenses: recurrentes,
+          archives: [...archives, { cycleStart: b.currentCycleStart, cycleEnd: dayBefore(calcStart), depenses: ponctuelles }],
+        };
+      }
+      return { ...b, cycleStartDay: day, archives }; // normalise les champs manquants
+    });
+  }, []); // une seule fois au montage
+
+  // Changer le jour de paie : re-cale le cycle SANS archiver (simple réglage)
+  const setCycleDay = (val) => {
+    const day = Math.min(Math.max(parseInt(val) || 1, 1), 28);
+    setBudget(b => ({ ...b, cycleStartDay: day, currentCycleStart: getCurrentCycleStart(day) }));
+  };
+
+  const cycleDay = (budget.cycleStartDay >= 1 && budget.cycleStartDay <= 28) ? budget.cycleStartDay : 1;
+  const cycleStart = budget.currentCycleStart || getCurrentCycleStart(cycleDay);
+  const cycleEnd = cycleEndFromStart(cycleStart);
+  const archives = Array.isArray(budget.archives) ? budget.archives : [];
 
   const revenus = Array.isArray(budget.revenus) ? budget.revenus : [];
   const depTotal = budget.depenses.reduce((a, d) => a + parseAmount(d.amount), 0);
@@ -1125,7 +1196,31 @@ function PlusTab() {
       )}
 
       {view === "budget" && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
+        <div>
+          {/* Cycle budgétaire (jour de paie + archivage auto) */}
+          <Card style={{ marginBottom: 16 }}>
+            <SectionTitle color={C.teal} action={
+              <button onClick={() => setShowArchives(s => !s)} style={{
+                background: "transparent", border: `1px solid ${C.border}`, color: C.textDim,
+                borderRadius: 10, padding: "4px 10px", fontSize: 11, fontWeight: 600
+              }}>{showArchives ? "Masquer l'historique" : "📜 Mois précédents"}</button>
+            }>🔄 Cycle budgétaire</SectionTitle>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 13, color: C.textDim }}>Je suis payé(e) le</span>
+              <select value={cycleDay} onChange={e => setCycleDay(e.target.value)} style={{ width: "auto" }}>
+                {Array.from({ length: 28 }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <span style={{ fontSize: 13, color: C.textDim }}>du mois</span>
+            </div>
+            <div style={{ fontSize: 12, color: C.teal, marginTop: 10, fontWeight: 600 }}>
+              Cycle actuel : du {fmtJourMois(cycleStart)} au {fmtJourMois(cycleEnd)}
+            </div>
+            <div style={{ fontSize: 11, color: C.textFaint, marginTop: 4 }}>
+              À chaque nouveau cycle, les dépenses « ponctuel » sont archivées automatiquement. Les mensuelles et annuelles restent.
+            </div>
+          </Card>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
           <div>
             {/* Revenus : plusieurs sources typées */}
             <Card style={{ marginBottom: 16 }}>
@@ -1182,7 +1277,7 @@ function PlusTab() {
               <input placeholder="Label..." value={newDep.label} onChange={e => setNewDep(d => ({ ...d, label: e.target.value }))} style={{ flex: 2 }} />
               <AmountInput value={newDep.amount} onChange={v => setNewDep(d => ({ ...d, amount: v }))} placeholder="€" style={{ flex: 1, minWidth: 0 }} />
             </div>
-            <div style={{ display: "flex", gap: 6, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
               {Object.keys(FREQ).map(f => (
                 <button key={f} onClick={() => setNewDep(d => ({ ...d, frequence: f }))} style={{
                   padding: "5px 12px", borderRadius: 10, fontSize: 12, fontWeight: 600, textTransform: "capitalize",
@@ -1191,21 +1286,50 @@ function PlusTab() {
                   border: `1px solid ${newDep.frequence === f ? FREQ[f] + "66" : C.border}`
                 }}>{f}</button>
               ))}
+            </div>
+            {(newDep.frequence === "mensuel" || newDep.frequence === "annuel") && (
+              <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12, color: C.textDim }}>Échéance : le</span>
+                <input type="number" min={1} max={31} placeholder="jour" value={newDep.jourEcheance}
+                  onChange={e => setNewDep(d => ({ ...d, jourEcheance: e.target.value }))}
+                  onFocus={e => e.target.select()} style={{ width: 70 }} />
+                {newDep.frequence === "annuel" ? (
+                  <select value={newDep.moisEcheance} onChange={e => setNewDep(d => ({ ...d, moisEcheance: e.target.value }))} style={{ width: "auto" }}>
+                    <option value="">mois…</option>
+                    {MOIS_FR.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+                  </select>
+                ) : (
+                  <span style={{ fontSize: 12, color: C.textDim }}>de chaque mois</span>
+                )}
+              </div>
+            )}
+            <div style={{ display: "flex", marginBottom: 12 }}>
               <Btn color={C.rose} small style={{ marginLeft: "auto" }} onClick={() => {
                 if (newDep.label.trim() && parseAmount(newDep.amount)) {
-                  setBudget(b => ({ ...b, depenses: [...b.depenses, { id: uid(), label: newDep.label.trim(), amount: newDep.amount, frequence: newDep.frequence }] }));
-                  setNewDep({ label: "", amount: "", frequence: "ponctuel" });
+                  const freq = newDep.frequence;
+                  const jour = parseInt(newDep.jourEcheance) || null;
+                  const mois = parseInt(newDep.moisEcheance) || null;
+                  setBudget(b => ({ ...b, depenses: [...b.depenses, {
+                    id: uid(), label: newDep.label.trim(), amount: newDep.amount, frequence: freq,
+                    jourEcheance: freq === "ponctuel" ? null : jour,
+                    moisEcheance: freq === "annuel" ? mois : null,
+                  }] }));
+                  setNewDep({ label: "", amount: "", frequence: "ponctuel", jourEcheance: "", moisEcheance: "" });
                 }
               }}>Ajouter</Btn>
             </div>
             {budget.depenses.map(d => {
               const f = d.frequence || "ponctuel";
+              const ech = fmtEcheance(d);
               return (
-                <div key={d.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                  <span style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</span>
-                    <Badge color={FREQ[f] || C.mauve} small>{f}</Badge>
-                  </span>
+                <div key={d.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</span>
+                      <Badge color={FREQ[f] || C.mauve} small>{f}</Badge>
+                    </div>
+                    {ech && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 2 }}>{ech}</div>}
+                  </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
                     <span style={{ color: C.rose, fontWeight: 600 }}>-{formatAmount(d.amount)}€</span>
                     <button onClick={() => setBudget(b => ({ ...b, depenses: b.depenses.filter(x => x.id !== d.id) }))} style={{ background: "transparent", border: "none", color: C.textFaint, cursor: "pointer" }}>✕</button>
@@ -1214,6 +1338,36 @@ function PlusTab() {
               );
             })}
           </Card>
+          </div>
+
+          {/* Historique des cycles archivés (lecture seule) */}
+          {showArchives && (
+            <Card style={{ marginTop: 16 }}>
+              <SectionTitle color={C.gold}>📜 Historique des cycles</SectionTitle>
+              {archives.length === 0 ? (
+                <div style={{ fontSize: 12, color: C.textFaint }}>Aucun cycle archivé pour l'instant.</div>
+              ) : (
+                [...archives].reverse().map((a, i) => {
+                  const tot = (a.depenses || []).reduce((s, d) => s + parseAmount(d.amount), 0);
+                  return (
+                    <div key={i} style={{ marginBottom: 14, borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>Du {fmtJourMois(a.cycleStart)} au {fmtJourMois(a.cycleEnd)}</span>
+                        <Badge color={C.rose} small>{formatAmount(tot)}€ ponctuel</Badge>
+                      </div>
+                      {(a.depenses || []).length === 0 ? (
+                        <div style={{ fontSize: 12, color: C.textFaint }}>Aucune dépense ponctuelle ce cycle.</div>
+                      ) : (a.depenses || []).map(d => (
+                        <div key={d.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.textDim, marginBottom: 3 }}>
+                          <span>{d.label}</span><span>-{formatAmount(d.amount)}€</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })
+              )}
+            </Card>
+          )}
         </div>
       )}
 
