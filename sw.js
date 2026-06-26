@@ -1,5 +1,5 @@
 // Service Worker GabOS — permet l'utilisation hors-ligne
-const CACHE = "gabos-v2";
+const CACHE = "gabos-v3";
 const ASSETS = [
   "./",
   "./index.html",
@@ -33,6 +33,13 @@ self.addEventListener("activate", (e) => {
 // Stratégie : on sert d'abord le cache, et on met à jour en arrière-plan
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
+
+  // Météo (Open-Meteo) : toujours le réseau, jamais de cache (données fraîches)
+  if (e.request.url.indexOf("open-meteo.com") !== -1) {
+    e.respondWith(fetch(e.request));
+    return;
+  }
+
   e.respondWith(
     caches.match(e.request).then((cached) => {
       const fetchPromise = fetch(e.request)
