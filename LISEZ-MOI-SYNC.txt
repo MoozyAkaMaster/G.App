@@ -1,0 +1,96 @@
+═══════════════════════════════════════════════════════════
+  GabOS — Activer la synchro iPhone ↔ iPad (Firebase, gratuit)
+═══════════════════════════════════════════════════════════
+
+À faire UNE SEULE FOIS. Ensuite, plus rien à entretenir.
+Tant que ces étapes ne sont pas faites, l'app marche en local
+(sans login), donc rien n'est cassé entre-temps.
+
+───────────────────────────────────────────────────────────
+ÉTAPE 1 — Créer le projet Firebase (gratuit, sans carte bancaire)
+───────────────────────────────────────────────────────────
+  1. Va sur  https://console.firebase.google.com
+  2. "Créer un projet" → donne un nom (ex. "gabos") → continue
+     (tu peux désactiver Google Analytics, inutile ici)
+  3. Attends la création, puis "Continuer".
+
+───────────────────────────────────────────────────────────
+ÉTAPE 2 — Activer la connexion par e-mail / mot de passe
+───────────────────────────────────────────────────────────
+  1. Menu de gauche : Build > Authentication > "Commencer"
+  2. Onglet "Sign-in method"
+  3. Clique "E-mail/Mot de passe" → active le 1er interrupteur
+     (laisse "Lien e-mail" désactivé) → Enregistrer
+
+───────────────────────────────────────────────────────────
+ÉTAPE 3 — Créer la base de données Firestore
+───────────────────────────────────────────────────────────
+  1. Menu de gauche : Build > Firestore Database > "Créer une base"
+  2. Choisis un emplacement (ex. eur3 / europe-west) → Suivant
+  3. Démarrer en "mode production" → Activer
+  4. Onglet "Règles" : remplace tout par ceci, puis "Publier" :
+
+      rules_version = '2';
+      service cloud.firestore {
+        match /databases/{database}/documents {
+          match /users/{uid} {
+            allow read, write: if request.auth != null
+                               && request.auth.uid == uid;
+          }
+        }
+      }
+
+  (Ces règles garantissent que chaque personne ne voit QUE ses
+   propres données.)
+
+───────────────────────────────────────────────────────────
+ÉTAPE 4 — Récupérer la config et la coller dans l'app
+───────────────────────────────────────────────────────────
+  1. En haut à gauche : ⚙️ (roue dentée) > "Paramètres du projet"
+  2. Onglet "Général", descends jusqu'à "Vos applications"
+  3. Clique l'icône Web  </>  → donne un surnom (ex. "gabos web")
+     → "Enregistrer l'application" (PAS besoin de l'hébergement Firebase)
+  4. Firebase affiche un bloc "firebaseConfig" du type :
+
+        const firebaseConfig = {
+          apiKey: "AIza........",
+          authDomain: "gabos-xxxx.firebaseapp.com",
+          projectId: "gabos-xxxx",
+          storageBucket: "gabos-xxxx.appspot.com",
+          messagingSenderId: "123456789",
+          appId: "1:123...:web:abc..."
+        };
+
+  5. Ouvre le fichier  index.html  (clic droit > Ouvrir avec > Bloc-notes
+     ou ton éditeur), cherche  FIREBASE_CONFIG  (vers le haut du fichier),
+     et remplace les "À_REMPLACER" par TES valeurs ci-dessus.
+     ⚠️ Garde bien les guillemets et les virgules.
+
+  6. Enregistre le fichier.
+
+───────────────────────────────────────────────────────────
+ÉTAPE 5 — Mettre à jour la version en ligne (GitHub)
+───────────────────────────────────────────────────────────
+  Dis-le moi (Claude) et je pousse la mise à jour, OU :
+  remplace le index.html dans ton dépôt GitHub par le nouveau.
+
+───────────────────────────────────────────────────────────
+UTILISATION
+───────────────────────────────────────────────────────────
+  • Au lancement, l'app demande de se connecter / créer un compte.
+  • Sur l'iPhone : créer le compte (e-mail + mot de passe).
+    → les données déjà présentes sont AUTOMATIQUEMENT envoyées au compte.
+  • Sur l'iPad : se connecter avec LE MÊME e-mail.
+    → l'iPad récupère tout.
+  • Ensuite, tout changement se synchronise automatiquement.
+    (Au retour sur l'app, elle récupère ce qui a changé sur l'autre appareil.)
+
+  • Bouton "☁️ Synchro" en haut à droite = appuie dessus pour te déconnecter.
+  • L'export manuel (onglet Plus > 💾 Sauvegarde) reste dispo en secours.
+
+───────────────────────────────────────────────────────────
+ENTRETIEN : aucun.
+  Pas de carte bancaire, pas de réactivation périodique.
+  Quotas gratuits (Firestore) : ~50 000 lectures et 20 000 écritures
+  PAR JOUR — largement au-delà des besoins d'une personne.
+═══════════════════════════════════════════════════════════

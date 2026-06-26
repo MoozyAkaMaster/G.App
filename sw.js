@@ -1,5 +1,5 @@
 // Service Worker GabOS — permet l'utilisation hors-ligne
-const CACHE = "gabos-v1";
+const CACHE = "gabos-v2";
 const ASSETS = [
   "./",
   "./index.html",
@@ -10,6 +10,9 @@ const ASSETS = [
   "https://unpkg.com/react@18/umd/react.production.min.js",
   "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
   "https://unpkg.com/@babel/standalone@7/babel.min.js",
+  "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js",
+  "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js",
+  "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js",
 ];
 
 self.addEventListener("install", (e) => {

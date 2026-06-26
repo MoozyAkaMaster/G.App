@@ -20,6 +20,11 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
 
+  <!-- ─── Firebase (login + synchro cloud iPhone ↔ iPad) ─ -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
   <style>
     html, body { margin: 0; padding: 0; background: #13111a; }
     /* Marges de sécurité pour l'encoche / barre du bas iPhone */
@@ -67,15 +72,125 @@ function useStorage(key, init) {
     try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : init; }
     catch { return init; }
   });
-  useEffect(() => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }, [key, val]);
+  useEffect(() => {
+    try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+    if (STORAGE_KEYS.includes(key)) window.__cloudPush?.();
+  }, [key, val]);
   return [val, setVal];
 }
 
-// Toutes les clés de données — utilisé pour la sauvegarde
+// Toutes les clés de données — utilisé pour la sauvegarde / synchro
 const STORAGE_KEYS = [
   "life_tasks", "life_journal", "life_health", "life_projects",
   "life_notes", "life_courses", "life_dossiers", "life_budget", "life_vision",
 ];
+
+// ═══════════════════════════════════════════════════════════════════
+//  ⚙️  CONFIG FIREBASE — colle ici les clés de TON projet Firebase.
+//  (Console Firebase > ⚙️ Paramètres du projet > "Vos applications" > Config)
+//  Ces clés sont publiques par nature : la sécurité est assurée par les
+//  règles Firestore (voir le fichier LISEZ-MOI-SYNC.txt).
+//  Tant que ce bloc n'est pas rempli, l'app marche en local (sans login).
+// ═══════════════════════════════════════════════════════════════════
+const FIREBASE_CONFIG = {
+  apiKey: "À_REMPLACER",
+  authDomain: "À_REMPLACER",
+  projectId: "À_REMPLACER",
+  storageBucket: "À_REMPLACER",
+  messagingSenderId: "À_REMPLACER",
+  appId: "À_REMPLACER",
+};
+
+const CLOUD_ENABLED = FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.apiKey !== "À_REMPLACER";
+
+// ─── Moteur de synchro cloud ─────────────────────────────────────
+// Identifiant unique de CET appareil (pour ne pas réagir à ses propres écritures)
+function getDeviceId() {
+  let id = localStorage.getItem("gabos_device_id");
+  if (!id) { id = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem("gabos_device_id", id); }
+  return id;
+}
+
+let _db = null, _auth = null, _pushTimer = null;
+
+function initFirebase() {
+  if (!CLOUD_ENABLED || typeof firebase === "undefined" || firebase.apps.length) return false;
+  firebase.initializeApp(FIREBASE_CONFIG);
+  _auth = firebase.auth();
+  _db = firebase.firestore();
+  return true;
+}
+
+function userDoc() {
+  const u = _auth?.currentUser;
+  if (!u) return null;
+  return _db.collection("users").doc(u.uid);
+}
+
+// Lit toutes les données locales sous forme de map de chaînes JSON
+function collectLocal() {
+  const data = {};
+  STORAGE_KEYS.forEach(k => { const v = localStorage.getItem(k); if (v != null) data[k] = v; });
+  return data;
+}
+
+// Y a-t-il déjà du contenu saisi sur cet appareil ?
+function localHasContent() {
+  const has = (k) => { try { const v = JSON.parse(localStorage.getItem(k) || "null"); return v && (Array.isArray(v) ? v.length : Object.keys(v).length); } catch { return false; } };
+  return !!(has("life_tasks") || has("life_journal") || has("life_notes") || has("life_courses"));
+}
+
+// Envoie les données locales vers le cloud (débounce 1,5 s)
+function cloudPush() {
+  if (!CLOUD_ENABLED || !userDoc()) return;
+  clearTimeout(_pushTimer);
+  _pushTimer = setTimeout(async () => {
+    try {
+      await userDoc().set({
+        data: collectLocal(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedBy: getDeviceId(),
+      }, { merge: true });
+      const snap = await userDoc().get();
+      const at = snap.data()?.updatedAt?.toMillis?.() || Date.now();
+      localStorage.setItem("gabos_applied_at", String(at));
+    } catch (e) { /* hors-ligne : réessaiera au prochain changement */ }
+  }, 1500);
+}
+window.__cloudPush = cloudPush;
+
+// Envoi immédiat (attendable) — utilisé à la 1ʳᵉ connexion / résolution de conflit
+async function cloudSyncNow() {
+  if (!CLOUD_ENABLED || !userDoc()) return;
+  await userDoc().set({
+    data: collectLocal(),
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    updatedBy: getDeviceId(),
+  }, { merge: true });
+  const snap = await userDoc().get();
+  const at = snap.data()?.updatedAt?.toMillis?.() || Date.now();
+  localStorage.setItem("gabos_applied_at", String(at));
+}
+
+// Va chercher les données distantes si elles sont plus récentes (au retour sur l'app)
+async function cloudPullIfNewer() {
+  if (!CLOUD_ENABLED || !userDoc()) return;
+  try {
+    const snap = await userDoc().get();
+    if (!snap.exists) return;
+    const d = snap.data();
+    const remoteAt = d.updatedAt?.toMillis?.() || 0;
+    const appliedAt = +localStorage.getItem("gabos_applied_at") || 0;
+    if (remoteAt > appliedAt && d.updatedBy !== getDeviceId()) applyRemote(d.data, remoteAt);
+  } catch {}
+}
+
+// Applique des données distantes en local puis recharge l'app
+function applyRemote(data, remoteAt) {
+  STORAGE_KEYS.forEach(k => { if (data && data[k] != null) localStorage.setItem(k, data[k]); });
+  if (remoteAt) localStorage.setItem("gabos_applied_at", String(remoteAt));
+  location.reload();
+}
 
 // ─── HELPERS ─────────────────────────────────────────────────────
 const uid = () => Math.random().toString(36).slice(2, 9);
@@ -1098,7 +1213,7 @@ function SaveView() {
 }
 
 // ─── APP ─────────────────────────────────────────────────────────
-function App() {
+function App({ user, onSignOut }) {
   const [tab, setTab] = useState("today");
   const [tasks, setTasks] = useStorage("life_tasks", []);
   const [journal, setJournal] = useStorage("life_journal", {});
@@ -1140,6 +1255,12 @@ function App() {
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {doneTodayCount > 0 && <Badge color={C.teal} small>✓ {doneTodayCount} aujourd'hui</Badge>}
           <Badge color={C.mauve} small>{tasks.filter(t => !t.done).length} actives</Badge>
+          {user && (
+            <button onClick={onSignOut} title={"Connectée : " + user.email + " — appuie pour te déconnecter"} style={{
+              background: C.teal + "22", color: C.teal, border: `1px solid ${C.teal}44`,
+              borderRadius: 99, padding: "4px 10px", fontSize: 11, fontWeight: 600
+            }}>☁️ Synchro</button>
+          )}
         </div>
       </div>
 
@@ -1177,7 +1298,198 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+// ─── ÉCRAN DE CONNEXION ──────────────────────────────────────────
+function LoginScreen() {
+  const [mode, setMode] = useState("login"); // login | signup
+  const [email, setEmail] = useState("");
+  const [pass, setPass] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setErr(""); setBusy(true);
+    try {
+      if (mode === "signup") await _auth.createUserWithEmailAndPassword(email.trim(), pass);
+      else await _auth.signInWithEmailAndPassword(email.trim(), pass);
+      // la suite est gérée par onAuthStateChanged
+    } catch (e) {
+      const m = {
+        "auth/invalid-email": "Adresse e-mail invalide.",
+        "auth/missing-password": "Entre un mot de passe.",
+        "auth/weak-password": "Mot de passe trop court (6 caractères minimum).",
+        "auth/email-already-in-use": "Ce compte existe déjà — connecte-toi.",
+        "auth/invalid-credential": "E-mail ou mot de passe incorrect.",
+        "auth/wrong-password": "Mot de passe incorrect.",
+        "auth/user-not-found": "Aucun compte avec cet e-mail.",
+        "auth/network-request-failed": "Pas de connexion internet.",
+      }[e.code] || "Une erreur est survenue. Réessaie.";
+      setErr(m); setBusy(false);
+    }
+  };
+
+  const reset = async () => {
+    if (!email.trim()) { setErr("Entre ton e-mail d'abord, puis reclique."); return; }
+    try { await _auth.sendPasswordResetEmail(email.trim()); setErr("📧 E-mail de réinitialisation envoyé !"); }
+    catch { setErr("Impossible d'envoyer l'e-mail."); }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <style>{GS}</style>
+      <div style={{ width: "100%", maxWidth: 360 }}>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <div style={{ fontSize: 34, fontFamily: "Playfair Display", fontWeight: 700 }}>
+            <span style={{ color: C.mauve }}>Gab</span><span style={{ color: C.textDim }}>OS</span>
+          </div>
+          <div style={{ color: C.textDim, fontSize: 13, marginTop: 6 }}>
+            Connecte-toi pour synchroniser tes données sur tous tes appareils 🌸
+          </div>
+        </div>
+
+        <Card>
+          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+            {[["login", "Connexion"], ["signup", "Créer un compte"]].map(([k, l]) => (
+              <button key={k} onClick={() => { setMode(k); setErr(""); }} style={{
+                flex: 1, padding: "8px", borderRadius: 10, fontSize: 13, fontWeight: 600,
+                background: mode === k ? C.mauve + "33" : "transparent",
+                color: mode === k ? C.mauve : C.textDim,
+                border: `1px solid ${mode === k ? C.mauve + "66" : C.border}`
+              }}>{l}</button>
+            ))}
+          </div>
+
+          <input type="email" inputMode="email" autoComplete="email" placeholder="Adresse e-mail"
+            value={email} onChange={e => setEmail(e.target.value)}
+            style={{ width: "100%", marginBottom: 10 }} />
+          <input type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"}
+            placeholder="Mot de passe" value={pass} onChange={e => setPass(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && submit()}
+            style={{ width: "100%", marginBottom: 14 }} />
+
+          {err && <div style={{ fontSize: 12, color: err.startsWith("📧") ? C.teal : C.red, marginBottom: 12 }}>{err}</div>}
+
+          <Btn onClick={submit} disabled={busy} style={{ width: "100%" }}>
+            {busy ? "…" : mode === "signup" ? "Créer mon compte ✨" : "Se connecter"}
+          </Btn>
+
+          {mode === "login" && (
+            <div onClick={reset} style={{ textAlign: "center", marginTop: 12, fontSize: 12, color: C.textDim, cursor: "pointer" }}>
+              Mot de passe oublié ?
+            </div>
+          )}
+        </Card>
+
+        <div style={{ textAlign: "center", marginTop: 16, fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>
+          Tes données restent privées et synchronisées via ton compte.<br />
+          Utilise le même e-mail sur l'iPhone et l'iPad.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── ÉCRAN DE CHARGEMENT ─────────────────────────────────────────
+function Splash({ text }) {
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16 }}>
+      <style>{GS}</style>
+      <div className="pulse" style={{ fontSize: 30, fontFamily: "Playfair Display", fontWeight: 700 }}>
+        <span style={{ color: C.mauve }}>Gab</span><span style={{ color: C.textDim }}>OS</span>
+      </div>
+      <div style={{ color: C.textDim, fontSize: 13 }}>{text}</div>
+    </div>
+  );
+}
+
+// ─── FENÊTRE DE CONFLIT (1ʳᵉ connexion avec données des 2 côtés) ──
+function ConflictModal({ onKeepDevice, onKeepCloud }) {
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <style>{GS}</style>
+      <Card style={{ maxWidth: 380 }}>
+        <SectionTitle color={C.gold}>⚠️ Données des deux côtés</SectionTitle>
+        <p style={{ fontSize: 13, color: C.textDim, lineHeight: 1.6, marginBottom: 16 }}>
+          Cet appareil <strong style={{ color: C.text }}>et</strong> ton compte contiennent déjà
+          des données. Lesquelles veux-tu garder ? (L'autre version sera remplacée.)
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <Btn color={C.mauve} onClick={onKeepDevice} style={{ width: "100%" }}>
+            📱 Garder les données de cet appareil
+          </Btn>
+          <Btn color={C.teal} outline onClick={onKeepCloud} style={{ width: "100%" }}>
+            ☁️ Garder les données du compte (cloud)
+          </Btn>
+        </div>
+        <div style={{ fontSize: 11, color: C.textFaint, marginTop: 14 }}>
+          💡 En cas de doute, exporte d'abord une sauvegarde (onglet Plus) avant de choisir.
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ─── ROOT : gère login + synchro de départ, puis lance l'app ─────
+function Root() {
+  const [phase, setPhase] = useState(CLOUD_ENABLED ? "loading" : "app");
+  const [user, setUser] = useState(null);
+  const [conflict, setConflict] = useState(null);
+
+  useEffect(() => {
+    if (!CLOUD_ENABLED) return;
+    initFirebase();
+    if (!_auth) { setPhase("app"); return; } // Firebase indisponible : mode local
+    const unsub = _auth.onAuthStateChanged(async (u) => {
+      if (!u) { setUser(null); setConflict(null); setPhase("login"); return; }
+      setUser(u); setPhase("syncing");
+      await initialSync();
+    });
+    return () => unsub && unsub();
+  }, []);
+
+  // Au retour sur l'app, récupère les changements faits sur l'autre appareil
+  useEffect(() => {
+    if (!CLOUD_ENABLED || phase !== "app") return;
+    const onVisible = () => { if (document.visibilityState === "visible") cloudPullIfNewer(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", cloudPullIfNewer);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", cloudPullIfNewer);
+    };
+  }, [phase]);
+
+  async function initialSync() {
+    try {
+      const snap = await userDoc().get();
+      if (!snap.exists) { await cloudSyncNow(); setPhase("app"); return; }
+      const d = snap.data();
+      const remoteAt = d.updatedAt?.toMillis?.() || 0;
+      const appliedAt = +localStorage.getItem("gabos_applied_at") || 0;
+      if (appliedAt === 0) {
+        if (localHasContent()) { setConflict({ data: d.data, remoteAt }); setPhase("conflict"); return; }
+        applyRemote(d.data, remoteAt); return; // recharge
+      }
+      if (remoteAt > appliedAt && d.updatedBy !== getDeviceId()) { applyRemote(d.data, remoteAt); return; }
+      localStorage.setItem("gabos_applied_at", String(Math.max(remoteAt, appliedAt)));
+      setPhase("app");
+    } catch { setPhase("app"); } // hors-ligne : on entre en local
+  }
+
+  const signOut = async () => { try { await _auth.signOut(); } catch {} };
+
+  if (phase === "loading") return <Splash text="Connexion…" />;
+  if (phase === "login") return <LoginScreen />;
+  if (phase === "syncing") return <Splash text="Synchronisation de tes données…" />;
+  if (phase === "conflict") return (
+    <ConflictModal
+      onKeepDevice={async () => { setPhase("syncing"); await cloudSyncNow(); setPhase("app"); }}
+      onKeepCloud={() => applyRemote(conflict.data, conflict.remoteAt)}
+    />
+  );
+  return <App user={user} onSignOut={signOut} />;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Root />);
 
 // ─── Service Worker (mode hors-ligne) ────────────────────────────
 if ("serviceWorker" in navigator) {
