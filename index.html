@@ -1322,7 +1322,11 @@ function LoginScreen() {
         "auth/wrong-password": "Mot de passe incorrect.",
         "auth/user-not-found": "Aucun compte avec cet e-mail.",
         "auth/network-request-failed": "Pas de connexion internet.",
-      }[e.code] || "Une erreur est survenue. Réessaie.";
+        "auth/operation-not-allowed": "Connexion e-mail/mot de passe pas encore activée dans Firebase (Authentication > Sign-in method).",
+        "auth/configuration-not-found": "Authentication pas encore configurée dans Firebase (Build > Authentication > Commencer).",
+        "auth/api-key-not-valid": "Clé API Firebase incorrecte (à recopier dans index.html).",
+        "auth/api-key-not-valid.-please-pass-a-valid-api-key.": "Clé API Firebase incorrecte (à recopier dans index.html).",
+      }[e.code] || ("Erreur : " + (e.code || e.message || "inconnue"));
       setErr(m); setBusy(false);
     }
   };
