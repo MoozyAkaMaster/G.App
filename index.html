@@ -83,8 +83,18 @@ function useStorage(key, init) {
 const STORAGE_KEYS = [
   "life_tasks", "life_journal", "life_health", "life_projects",
   "life_notes", "life_courses", "life_dossiers", "life_budget", "life_vision",
-  "life_weather_cities",
+  "life_weather_cities", "life_events",
 ];
+
+// ═══════════════════════════════════════════════════════════════════
+//  📅  ABONNEMENT CALENDRIER (.ics) — URL de base des Cloud Functions.
+//  Laisse "" tant que la Cloud Function n'est PAS déployée : seul
+//  l'export manuel .ics sera proposé (l'abonnement auto sera masqué).
+//  Pour l'activer : déploie functions/index.js (voir ce fichier),
+//  puis colle ici l'URL de base affichée par Firebase, par ex. :
+//    "https://us-central1-gabos-3d3e8.cloudfunctions.net"
+// ═══════════════════════════════════════════════════════════════════
+const ICS_FEED_BASE = "";
 
 // ═══════════════════════════════════════════════════════════════════
 //  ⚙️  CONFIG FIREBASE — colle ici les clés de TON projet Firebase.
@@ -288,6 +298,8 @@ function SectionTitle({ children, color = C.mauve, action }) {
 // ─── TAB: AUJOURD'HUI ────────────────────────────────────────────
 function TodayTab({ tasks, setTasks, journal, setJournal, health, setHealth }) {
   const d = today();
+  const [events] = useStorage("life_events", []);
+  const todayEvents = eventsForDay(events, d);
   const todayJ = journal[d] || { mood: 3, note: "", proud: "", water: 0 };
 
   const updateJ = (k, v) => setJournal(j => ({ ...j, [d]: { ...todayJ, [k]: v } }));
@@ -331,6 +343,33 @@ function TodayTab({ tasks, setTasks, journal, setJournal, health, setHealth }) {
           </div>
         </Card>
       </div>
+
+      {/* Événements du jour */}
+      <Card>
+        <SectionTitle color={C.mauve} action={
+          todayEvents.length > 0 && <Badge color={C.mauve} small>{todayEvents.length}</Badge>
+        }>📅 Aujourd'hui</SectionTitle>
+        {todayEvents.length === 0 ? (
+          <div style={{ color: C.textFaint, fontSize: 13, textAlign: "center", padding: "20px 0" }}>
+            Rien de prévu aujourd'hui 🌸
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {todayEvents.map(e => {
+              const col = C[e.color] || C.mauve;
+              return (
+                <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ width: 4, alignSelf: "stretch", minHeight: 26, borderRadius: 99, background: col, flexShrink: 0 }} />
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 12, color: C.textDim }}>{eventLineLabel(e)}</div>
+                    <div style={{ fontSize: 14, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.title}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
 
       {/* Priorités du jour */}
       <Card>
@@ -1710,6 +1749,484 @@ function WeatherTab() {
   );
 }
 
+// ─── HELPERS CALENDRIER / ÉVÉNEMENTS ─────────────────────────────
+const DAY_MS = 86400000;
+// Date -> "YYYY-MM-DD" (en heure locale)
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+// "YYYY-MM-DD" -> Date (midi local, pour éviter les décalages de fuseau)
+const parseYMD = (s) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d, 12, 0, 0, 0); };
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+// Lundi de la semaine contenant `d`
+const startOfWeek = (d) => { const x = new Date(d); const wd = (x.getDay() + 6) % 7; x.setDate(x.getDate() - wd); x.setHours(12, 0, 0, 0); return x; };
+
+// "HH:MM" -> minutes depuis minuit (ou null)
+const timeToMin = (t) => { if (!t) return null; const [h, m] = t.split(":").map(Number); return h * 60 + (m || 0); };
+// minutes -> "HH:MM"
+const minToTime = (mins) => `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
+// "09:00" -> "9h", "09:30" -> "9h30"
+const fmtHeure = (t) => { if (!t) return ""; const [h, m] = t.split(":"); return m === "00" ? `${parseInt(h)}h` : `${parseInt(h)}h${m}`; };
+
+// L'événement `ev` a-t-il une occurrence le jour `dateStr` ("YYYY-MM-DD") ?
+// Gère la récurrence (none/daily/weekly/monthly) sans stocker chaque occurrence.
+function eventOccursOn(ev, dateStr) {
+  const base = ev.date;
+  if (!base || dateStr < base) return false;
+  if (ev.recurrenceEnd && dateStr > ev.recurrenceEnd) return false;
+  const rec = ev.recurrence || "none";
+  if (rec === "none") return dateStr === base;
+  if (rec === "daily") return true;
+  const bd = parseYMD(base), dd = parseYMD(dateStr);
+  if (rec === "weekly") return Math.round((dd - bd) / DAY_MS) % 7 === 0;
+  if (rec === "monthly") return bd.getDate() === dd.getDate();
+  return dateStr === base;
+}
+
+// Tous les événements (occurrences incluses) qui tombent le jour `dateStr`,
+// triés : « toute la journée » d'abord, puis par heure de début.
+function eventsForDay(events, dateStr) {
+  return events
+    .filter(e => eventOccursOn(e, dateStr))
+    .sort((a, b) => {
+      const am = timeToMin(a.startTime), bm = timeToMin(b.startTime);
+      if (am == null && bm == null) return 0;
+      if (am == null) return -1;
+      if (bm == null) return 1;
+      return am - bm;
+    });
+}
+
+// Texte « 11h-13h — Dentiste » / « 11h — … » / « Toute la journée — … »
+function eventLineLabel(ev) {
+  if (!ev.startTime) return "Toute la journée";
+  if (ev.endTime) return `${fmtHeure(ev.startTime)}-${fmtHeure(ev.endTime)}`;
+  return fmtHeure(ev.startTime);
+}
+
+// ─── GÉNÉRATION iCalendar (.ics) — RFC 5545 ──────────────────────
+function icsEscape(s) {
+  return String(s == null ? "" : s)
+    .replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+}
+// "YYYY-MM-DD" -> "YYYYMMDD"
+const icsDate = (dateStr) => dateStr.replace(/-/g, "");
+// "YYYY-MM-DD" + "HH:MM" -> "YYYYMMDDTHHMMSS" (heure locale « flottante »)
+const icsDateTime = (dateStr, timeStr) => icsDate(dateStr) + "T" + (timeStr || "00:00").replace(":", "") + "00";
+
+function icsRRule(ev) {
+  const map = { daily: "DAILY", weekly: "WEEKLY", monthly: "MONTHLY" };
+  const freq = map[ev.recurrence];
+  if (!freq) return "";
+  let r = "RRULE:FREQ=" + freq;
+  if (ev.recurrenceEnd) r += ";UNTIL=" + icsDate(ev.recurrenceEnd) + "T235959Z";
+  return r;
+}
+
+function eventToVEVENT(ev) {
+  const lines = ["BEGIN:VEVENT"];
+  lines.push("UID:" + (ev.id || uid()) + "@gabos");
+  lines.push("DTSTAMP:" + icsDateTime(ev.date, "12:00") + "Z");
+  if (ev.startTime) {
+    lines.push("DTSTART:" + icsDateTime(ev.date, ev.startTime));
+    if (ev.endTime) lines.push("DTEND:" + icsDateTime(ev.date, ev.endTime));
+  } else {
+    // Événement « toute la journée » : DTEND = jour suivant (exclusif)
+    lines.push("DTSTART;VALUE=DATE:" + icsDate(ev.date));
+    lines.push("DTEND;VALUE=DATE:" + icsDate(ymd(addDays(parseYMD(ev.date), 1))));
+  }
+  const rrule = icsRRule(ev);
+  if (rrule) lines.push(rrule);
+  lines.push("SUMMARY:" + icsEscape(ev.title || "Sans titre"));
+  if (ev.location) lines.push("LOCATION:" + icsEscape(ev.location));
+  const desc = [ev.notes, ev.email && ("Email : " + ev.email), ev.phone && ("Tél : " + ev.phone)].filter(Boolean).join("\n");
+  if (desc) lines.push("DESCRIPTION:" + icsEscape(desc));
+  lines.push("END:VEVENT");
+  return lines.join("\r\n");
+}
+
+function buildICS(events) {
+  return [
+    "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//GabOS//Calendrier//FR",
+    "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "X-WR-CALNAME:GabOS",
+    ...events.filter(e => e.date).map(eventToVEVENT),
+    "END:VCALENDAR",
+  ].join("\r\n");
+}
+
+function downloadICS(events) {
+  const blob = new Blob([buildICS(events)], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `gabos-calendrier-${today()}.ics`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Couleurs proposées pour un événement (clés de l'objet C)
+const EVENT_COLORS = ["mauve", "teal", "rose", "gold", "beige", "green", "red", "mauveLight"];
+
+// ─── FORMULAIRE ÉVÉNEMENT (ajout / édition) ──────────────────────
+function EventForm({ initial, onSave, onDelete, onClose }) {
+  const [f, setF] = useState(initial);
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const allDay = !f.startTime;
+
+  const toggleAllDay = (checked) => {
+    if (checked) setF(p => ({ ...p, startTime: null, endTime: null }));
+    else setF(p => ({ ...p, startTime: "09:00", endTime: "10:00" }));
+  };
+
+  const submit = () => {
+    if (!f.title.trim() || !f.date) return;
+    onSave({ ...f, title: f.title.trim() });
+  };
+
+  const label = { fontSize: 12, color: C.textDim, marginBottom: 4, display: "block" };
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "#0008", zIndex: 200,
+      display: "flex", alignItems: "flex-start", justifyContent: "center",
+      padding: 16, overflowY: "auto"
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{ width: "100%", maxWidth: 420, marginTop: 24, marginBottom: 24 }}>
+        <Card>
+          <SectionTitle color={C[f.color] || C.mauve}>
+            {f.id ? "✏️ Modifier l'événement" : "➕ Nouvel événement"}
+          </SectionTitle>
+
+          <label style={label}>Titre</label>
+          <input placeholder="Ex: Rendez-vous dentiste" value={f.title}
+            onChange={e => set("title", e.target.value)} style={{ width: "100%", marginBottom: 12 }} />
+
+          <label style={label}>Date</label>
+          <input type="date" value={f.date} onChange={e => set("date", e.target.value)}
+            style={{ width: "100%", marginBottom: 12 }} />
+
+          <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, color: C.textDim, cursor: "pointer", marginBottom: 12 }}>
+            <input type="checkbox" checked={allDay} onChange={e => toggleAllDay(e.target.checked)}
+              style={{ accentColor: C.mauve, width: "auto" }} />
+            Toute la journée
+          </label>
+
+          {!allDay && (
+            <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+              <div style={{ flex: 1 }}>
+                <label style={label}>Début</label>
+                <input type="time" value={f.startTime || ""} onChange={e => set("startTime", e.target.value || null)} style={{ width: "100%" }} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={label}>Fin (optionnel)</label>
+                <input type="time" value={f.endTime || ""} onChange={e => set("endTime", e.target.value || null)} style={{ width: "100%" }} />
+              </div>
+            </div>
+          )}
+
+          <label style={label}>Récurrence</label>
+          <select value={f.recurrence} onChange={e => set("recurrence", e.target.value)} style={{ width: "100%", marginBottom: 12 }}>
+            <option value="none">Aucune</option>
+            <option value="daily">Tous les jours</option>
+            <option value="weekly">Toutes les semaines</option>
+            <option value="monthly">Tous les mois</option>
+          </select>
+
+          {f.recurrence !== "none" && (
+            <div style={{ marginBottom: 12 }}>
+              <label style={label}>Jusqu'au (optionnel)</label>
+              <input type="date" value={f.recurrenceEnd || ""} onChange={e => set("recurrenceEnd", e.target.value || null)} style={{ width: "100%" }} />
+            </div>
+          )}
+
+          <label style={label}>Lieu</label>
+          <input placeholder="Adresse, salle..." value={f.location || ""}
+            onChange={e => set("location", e.target.value)} style={{ width: "100%", marginBottom: 12 }} />
+
+          <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+            <div style={{ flex: 1 }}>
+              <label style={label}>Email</label>
+              <input type="email" inputMode="email" placeholder="@" value={f.email || ""}
+                onChange={e => set("email", e.target.value)} style={{ width: "100%" }} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={label}>Téléphone</label>
+              <input type="tel" inputMode="tel" placeholder="06…" value={f.phone || ""}
+                onChange={e => set("phone", e.target.value)} style={{ width: "100%" }} />
+            </div>
+          </div>
+
+          <label style={label}>Notes</label>
+          <textarea value={f.notes || ""} onChange={e => set("notes", e.target.value)}
+            placeholder="Détails…" style={{ width: "100%", height: 60, resize: "none", marginBottom: 12 }} />
+
+          <label style={label}>Couleur</label>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18 }}>
+            {EVENT_COLORS.map(c => (
+              <div key={c} onClick={() => set("color", c)} style={{
+                width: 28, height: 28, borderRadius: 8, background: C[c], cursor: "pointer",
+                border: `2px solid ${f.color === c ? C.text : "transparent"}`,
+                boxShadow: f.color === c ? `0 0 0 2px ${C[c]}66` : "none"
+              }} />
+            ))}
+          </div>
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn color={C[f.color] || C.mauve} onClick={submit} style={{ flex: 1 }}>
+              {f.id ? "Enregistrer" : "Ajouter ✨"}
+            </Btn>
+            <Btn outline onClick={onClose}>Annuler</Btn>
+          </div>
+          {f.id && (
+            <Btn color={C.red} outline small style={{ marginTop: 10, width: "100%" }}
+              onClick={() => onDelete(f.id)}>🗑 Supprimer</Btn>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ─── CARTE « Synchroniser avec mon calendrier » (.ics) ───────────
+function IcsSyncCard({ events, user }) {
+  const subscriptionAvailable = CLOUD_ENABLED && ICS_FEED_BASE && user;
+  return (
+    <Card style={{ marginTop: 16 }}>
+      <SectionTitle color={C.teal}>🔗 Synchroniser avec mon calendrier</SectionTitle>
+
+      {/* 1. Export manuel — toujours disponible */}
+      <p style={{ fontSize: 13, color: C.textDim, lineHeight: 1.6, marginBottom: 12 }}>
+        Télécharge un fichier <strong style={{ color: C.text }}>.ics</strong> et importe-le dans
+        Apple Calendar ou Google Calendar (import ponctuel, à refaire après tes modifs).
+      </p>
+      <Btn color={C.teal} onClick={() => downloadICS(events)} style={{ width: "100%" }}>
+        ⬇️ Exporter mon calendrier (.ics)
+      </Btn>
+
+      {/* 2. Abonnement automatique — seulement si la Cloud Function est déployée */}
+      {subscriptionAvailable
+        ? <IcsSubscription user={user} />
+        : (
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.border}`, fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>
+            💡 L'abonnement automatique (calendrier qui se met à jour tout seul) nécessite de
+            déployer la Cloud Function Firebase <strong style={{ color: C.textDim }}>functions/index.js</strong>,
+            puis de renseigner <strong style={{ color: C.textDim }}>ICS_FEED_BASE</strong> en haut du fichier.
+          </div>
+        )}
+    </Card>
+  );
+}
+
+// Affiché uniquement si Firebase + Cloud Function configurés. Génère/lit un
+// token aléatoire stocké dans le profil utilisateur Firestore (champ icsToken).
+function IcsSubscription({ user }) {
+  const [token, setToken] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const ref = userDoc();
+        if (!ref) return;
+        const snap = await ref.get();
+        let t = snap.exists && snap.data().icsToken;
+        if (!t) { t = uid() + uid() + uid(); await ref.set({ icsToken: t }, { merge: true }); }
+        if (active) setToken(t);
+      } catch {}
+    })();
+    return () => { active = false; };
+  }, []);
+
+  const url = token ? `${ICS_FEED_BASE}/icsFeed?token=${token}` : "";
+  const copy = () => {
+    if (!url) return;
+    navigator.clipboard?.writeText(url).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); });
+  };
+
+  return (
+    <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${C.border}` }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: C.mauve, marginBottom: 8 }}>♾️ Abonnement automatique</div>
+      {!token ? (
+        <div style={{ fontSize: 12, color: C.textFaint }}>Préparation du lien…</div>
+      ) : (
+        <div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+            <input readOnly value={url} onFocus={e => e.target.select()} style={{ flex: 1, fontSize: 11 }} />
+            <Btn color={C.mauve} small onClick={copy}>{copied ? "✓ Copié" : "Copier"}</Btn>
+          </div>
+          <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.6 }}>
+            <strong style={{ color: C.text }}>Sur iPhone/Mac :</strong> Réglages &gt; Calendrier &gt; Comptes &gt; Ajouter un compte &gt; Autre &gt; Compte calendrier S'abonner.<br />
+            <strong style={{ color: C.text }}>Sur Google Calendar :</strong> Autres agendas &gt; À partir de l'URL.
+          </div>
+          <div style={{ fontSize: 11, color: C.gold, marginTop: 10, background: C.gold + "18", borderRadius: 8, padding: "8px 10px" }}>
+            ⚠️ Abonnement en lecture seule : les modifications faites depuis Apple/Google Calendar ne reviendront pas dans GabOS.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── TAB: CALENDRIER ─────────────────────────────────────────────
+function CalendarTab({ user }) {
+  const [events, setEvents] = useStorage("life_events", []);
+  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
+  const [editing, setEditing] = useState(null);
+  const gridRef = useRef(null);
+
+  const HOUR_H = 44;           // hauteur d'une heure de grille (px)
+  const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+  const todayStr = today();
+
+  // Au montage : centrer la vue vers 7h du matin
+  useEffect(() => { if (gridRef.current) gridRef.current.scrollTop = 7 * HOUR_H; }, []);
+
+  const openNew = (dateStr, startTime) => setEditing({
+    id: null, title: "", date: dateStr,
+    startTime: startTime || null,
+    endTime: startTime ? minToTime(Math.min(timeToMin(startTime) + 60, 23 * 60 + 59)) : null,
+    recurrence: "none", recurrenceEnd: null,
+    location: "", email: "", phone: "", notes: "", color: "mauve",
+  });
+
+  const save = (ev) => {
+    setEvents(list => ev.id ? list.map(e => e.id === ev.id ? ev : e) : [...list, { ...ev, id: uid() }]);
+    setEditing(null);
+  };
+  const remove = (id) => { setEvents(list => list.filter(e => e.id !== id)); setEditing(null); };
+
+  // Clic sur une colonne-jour vide -> ajout avec heure pré-remplie (arrondi 30 min)
+  const onColumnClick = (dateStr, e) => {
+    const y = e.nativeEvent.offsetY;
+    let mins = Math.round((y / HOUR_H) * 2) / 2 * 60;
+    mins = Math.max(0, Math.min(23 * 60 + 30, Math.round(mins / 30) * 30));
+    openNew(dateStr, minToTime(mins));
+  };
+
+  const weekLabel = () => {
+    const a = days[0], b = days[6];
+    const optA = { day: "numeric", month: a.getMonth() === b.getMonth() ? undefined : "short" };
+    return `${a.toLocaleDateString("fr-FR", optA)} – ${b.toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}`;
+  };
+
+  return (
+    <div>
+      {/* Barre de navigation semaine */}
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Btn small outline onClick={() => setWeekStart(w => addDays(w, -7))}>‹</Btn>
+            <Btn small outline onClick={() => setWeekStart(startOfWeek(new Date()))}>Aujourd'hui</Btn>
+            <Btn small outline onClick={() => setWeekStart(w => addDays(w, 7))}>›</Btn>
+            <span style={{ fontSize: 14, fontWeight: 700, fontFamily: "Playfair Display", marginLeft: 6 }}>{weekLabel()}</span>
+          </div>
+          <Btn color={C.mauve} onClick={() => openNew(todayStr, "09:00")}>+ Événement</Btn>
+        </div>
+      </Card>
+
+      {/* Vue semaine */}
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        {/* En-têtes des jours */}
+        <div style={{ display: "flex", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ width: 44, flexShrink: 0 }} />
+          {days.map(d => {
+            const isToday = ymd(d) === todayStr;
+            return (
+              <div key={ymd(d)} style={{ flex: 1, textAlign: "center", padding: "8px 2px", minWidth: 0 }}>
+                <div style={{ fontSize: 10, color: C.textDim, textTransform: "uppercase" }}>
+                  {d.toLocaleDateString("fr-FR", { weekday: "short" }).replace(".", "")}
+                </div>
+                <div style={{
+                  fontSize: 15, fontWeight: 700, marginTop: 2,
+                  color: isToday ? C.bg : C.text,
+                  background: isToday ? C.mauve : "transparent",
+                  borderRadius: 99, width: 26, height: 26, lineHeight: "26px", margin: "2px auto 0"
+                }}>{d.getDate()}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Bandeau « toute la journée » */}
+        <div style={{ display: "flex", borderBottom: `1px solid ${C.border}`, minHeight: 26 }}>
+          <div style={{ width: 44, flexShrink: 0, fontSize: 9, color: C.textFaint, textAlign: "center", paddingTop: 6 }}>jour</div>
+          {days.map(d => {
+            const ds = ymd(d);
+            const allDay = eventsForDay(events, ds).filter(e => !e.startTime);
+            return (
+              <div key={ds} style={{ flex: 1, minWidth: 0, borderLeft: `1px solid ${C.border}`, padding: 3, display: "flex", flexDirection: "column", gap: 3 }}>
+                {allDay.map(e => (
+                  <div key={e.id} onClick={() => setEditing(e)} style={{
+                    background: (C[e.color] || C.mauve) + "33", color: C[e.color] || C.mauve,
+                    borderLeft: `3px solid ${C[e.color] || C.mauve}`, borderRadius: 5,
+                    fontSize: 10, padding: "2px 5px", cursor: "pointer",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
+                  }}>{e.title}</div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Grille horaire */}
+        <div ref={gridRef} style={{ display: "flex", maxHeight: 560, overflowY: "auto", position: "relative" }}>
+          {/* Colonne des heures */}
+          <div style={{ width: 44, flexShrink: 0 }}>
+            {Array.from({ length: 24 }).map((_, h) => (
+              <div key={h} style={{ height: HOUR_H, fontSize: 10, color: C.textFaint, textAlign: "right", paddingRight: 5, transform: "translateY(-6px)" }}>
+                {h === 0 ? "" : `${h}h`}
+              </div>
+            ))}
+          </div>
+
+          {/* Colonnes des jours */}
+          {days.map(d => {
+            const ds = ymd(d);
+            const timed = eventsForDay(events, ds).filter(e => e.startTime);
+            return (
+              <div key={ds} onClick={(e) => onColumnClick(ds, e)} style={{
+                flex: 1, minWidth: 0, position: "relative", height: 24 * HOUR_H,
+                borderLeft: `1px solid ${C.border}`, cursor: "pointer"
+              }}>
+                {/* Lignes de grille */}
+                {Array.from({ length: 24 }).map((_, h) => (
+                  <div key={h} style={{ position: "absolute", top: h * HOUR_H, left: 0, right: 0, height: HOUR_H, borderTop: `1px solid ${C.border}55`, pointerEvents: "none" }} />
+                ))}
+                {/* Événements positionnés */}
+                {timed.map(e => {
+                  const start = timeToMin(e.startTime);
+                  const end = e.endTime ? Math.max(timeToMin(e.endTime), start + 20) : start + 30;
+                  const top = (start / 60) * HOUR_H;
+                  const height = Math.max(((end - start) / 60) * HOUR_H, 16);
+                  const col = C[e.color] || C.mauve;
+                  return (
+                    <div key={e.id} onClick={(ev) => { ev.stopPropagation(); setEditing(e); }} style={{
+                      position: "absolute", top, height, left: 2, right: 2,
+                      background: col + "33", borderLeft: `3px solid ${col}`, borderRadius: 5,
+                      padding: "1px 4px", overflow: "hidden", cursor: "pointer", fontSize: 10, color: C.text
+                    }}>
+                      <div style={{ fontWeight: 600, lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.title}</div>
+                      {height > 26 && <div style={{ color: C.textDim, fontSize: 9 }}>{eventLineLabel(e)}</div>}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* Synchronisation .ics */}
+      <IcsSyncCard events={events} user={user} />
+
+      {editing && (
+        <EventForm initial={editing} onSave={save} onDelete={remove} onClose={() => setEditing(null)} />
+      )}
+    </div>
+  );
+}
+
 // ─── APP ─────────────────────────────────────────────────────────
 function App({ user, onSignOut }) {
   const [tab, setTab] = useState("today");
@@ -1719,6 +2236,7 @@ function App({ user, onSignOut }) {
 
   const TABS = [
     { id: "today", icon: "☀️", label: "Aujourd'hui" },
+    { id: "calendar", icon: "📅", label: "Calendrier" },
     { id: "tasks", icon: "📋", label: "Tâches" },
     { id: "focus", icon: "🍅", label: "Focus" },
     { id: "goals", icon: "🎯", label: "Objectifs" },
@@ -1787,6 +2305,7 @@ function App({ user, onSignOut }) {
       {/* Content */}
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px 48px" }}>
         {tab === "today" && <TodayTab tasks={tasks} setTasks={setTasks} journal={journal} setJournal={setJournal} health={health} setHealth={setHealth} />}
+        {tab === "calendar" && <CalendarTab user={user} />}
         {tab === "tasks" && <TasksTab tasks={tasks} setTasks={setTasks} />}
         {tab === "focus" && <FocusTab tasks={tasks} />}
         {tab === "goals" && <ObjectifsTab />}
